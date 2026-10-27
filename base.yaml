@@ -1,0 +1,87 @@
+specVersion: 1.2.0
+description: Phala base circulation, midnight history and analytics
+repository: https://github.com/Phala-Network/phala-vault-state-subgraph
+schema:
+  file: ./schema.graphql
+indexerHints:
+  prune: auto
+dataSources:
+  - kind: ethereum
+    name: TokenFrom
+    network: base
+    source:
+      address: "0x336c9297afb7798c292e9f80d8e566b947f291f0"
+      abi: Token
+      startBlock: 12743284
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities: [ChainState, ChainDay, Latest, Transfer]
+      abis:
+        - name: Token
+          file: ./abis/Token.json
+      eventHandlers:
+        - event: Transfer(indexed address,indexed address,uint256)
+          handler: handleFrom
+          topic1:
+            [
+              "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "0x0000000000000000000000004731bc41b3cca4c2883b8ebb68cb546d5b3b4dd6",
+              "0x000000000000000000000000cd38b15a419491c7c1238b0659f65c755792e257",
+              "0x0000000000000000000000006ed3bc069cf4f87de05c04c352e8356492ec6efe",
+              "0x000000000000000000000000eec0fb4913119567cdfc0c5fc2bf8f9f9b226c2d",
+              "0x000000000000000000000000c832588193cd5ed2185dada4a531e0b26ec5b830",
+              "0x0000000000000000000000003ee18b2214aff97000d974cf647e7c347e8fa585",
+            ]
+      file: ./src/token.ts
+  - kind: ethereum
+    name: TokenTo
+    network: base
+    source:
+      address: "0x336c9297afb7798c292e9f80d8e566b947f291f0"
+      abi: Token
+      startBlock: 12743284
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities: [ChainState, ChainDay, Latest, Transfer]
+      abis:
+        - name: Token
+          file: ./abis/Token.json
+      eventHandlers:
+        - event: Transfer(indexed address,indexed address,uint256)
+          handler: handleTo
+          topic2:
+            [
+              "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "0x0000000000000000000000004731bc41b3cca4c2883b8ebb68cb546d5b3b4dd6",
+              "0x000000000000000000000000cd38b15a419491c7c1238b0659f65c755792e257",
+              "0x0000000000000000000000006ed3bc069cf4f87de05c04c352e8356492ec6efe",
+              "0x000000000000000000000000eec0fb4913119567cdfc0c5fc2bf8f9f9b226c2d",
+              "0x000000000000000000000000c832588193cd5ed2185dada4a531e0b26ec5b830",
+              "0x0000000000000000000000003ee18b2214aff97000d974cf647e7c347e8fa585",
+            ]
+      file: ./src/token.ts
+  - kind: ethereum
+    name: Clock
+    network: base
+    source:
+      address: "0x336c9297afb7798c292e9f80d8e566b947f291f0"
+      abi: Token
+      startBlock: 52000000
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities: [ChainState, ChainDay, VaultDay, ClaimDay, Latest]
+      abis:
+        - name: Token
+          file: ./abis/Token.json
+      blockHandlers:
+        - handler: handleBlock
+          filter:
+            kind: polling
+            every: 150
+      file: ./src/clock.ts

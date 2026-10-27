@@ -1,0 +1,22 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.3/schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": {
+    "includes": [
+      "**",
+      "!!generated",
+      "!!build",
+      "!!tests/.bin",
+      "!!tests/.latest.json"
+    ]
+  },
+  "formatter": { "indentStyle": "space" },
+  "linter": { "enabled": true, "rules": { "preset": "recommended" } },
+  "overrides": [
+    {
+      "includes": ["src/**", "tests/**"],
+      "linter": { "enabled": false },
+      "assist": { "enabled": false }
+    }
+  ]
+}
