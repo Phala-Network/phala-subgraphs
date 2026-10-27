@@ -26,6 +26,7 @@ import {
   Withdraw,
 } from "../generated/Vault/Vault";
 import { Holder, VaultEvent, VaultState } from "../generated/schema";
+import { markUnreviewed } from "./assets";
 import { FLOW_FIELDS, IMPLEMENTATION, VAULT, ZERO } from "./constants";
 import { closeDaysUpTo, refreshLatest } from "./days";
 
@@ -93,14 +94,13 @@ function begin(
     // and keep claimers alive; consumers must reject the unreviewed flag.
     // Earlier logs in an upgrade block also read the new end-of-block ABI,
     // before the Upgraded log has updated our implementation address.
-    state.vaultImplementationReviewed = false;
-    state.accrualMode = "checkpoint-only";
+    markUnreviewed(state);
   }
-  if (state.vaultImplementationReviewed)
-    assert(
-      state.treasuryRatio.le(BigInt.fromI32(10000)),
-      "Invalid treasury basis points",
-    );
+  if (
+    state.treasuryRatio.gt(BigInt.fromI32(10000)) ||
+    state.checkpointTime.gt(event.block.timestamp)
+  )
+    markUnreviewed(state);
   return state;
 }
 function finish(

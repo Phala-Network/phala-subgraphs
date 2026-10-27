@@ -426,38 +426,42 @@ function archives(evidence: Evidence, ndjson: string, exported: unknown): Row {
 async function claimers(options: Options, evidence: Evidence): Promise<Row> {
   const khalaMeta = await meta(options["old-khala"]);
   const phalaMeta = await meta(options["old-phala"]);
-  const block = Math.min(
-    Number(record(evidence.ethMeta.block).number),
-    Number(record(khalaMeta.block).number),
-    Number(record(phalaMeta.block).number),
-  );
-  const counts: Row = { block };
-  for (const [entity, fields, oldUrl] of [
-    ["claimeds", `${CLAIM_FIELDS} receiver`, options["old-khala"]],
-    [
-      "claimedAndBridgeds",
-      `${CLAIM_FIELDS} l1Receiver l2Receiver`,
-      options["old-phala"],
-    ],
+  const newBlock = Number(record(evidence.ethMeta.block).number);
+  const khalaBlock = Number(record(khalaMeta.block).number);
+  const phalaBlock = Number(record(phalaMeta.block).number);
+  const counts: Row = {};
+  for (const { entity, fields, oldUrl, block } of [
+    {
+      entity: "claimeds",
+      fields: `${CLAIM_FIELDS} receiver`,
+      oldUrl: options["old-khala"],
+      block: khalaBlock,
+    },
+    {
+      entity: "claimedAndBridgeds",
+      fields: `${CLAIM_FIELDS} l1Receiver l2Receiver`,
+      oldUrl: options["old-phala"],
+      block: phalaBlock,
+    },
   ]) {
-    assert.ok(entity && fields && oldUrl);
-    const actual = await page(options.ethereum, entity, fields, {
+    assert.ok(
+      newBlock >= block,
+      `New subgraph has not reached the old ${entity} comparison block`,
+    );
+    const filter = {
       filter: "block_number_lte:$cutoff",
       declarations: ",$cutoff:BigInt!",
       variables: { cutoff: String(block) },
-    });
-    const expected = await page(oldUrl, entity, fields, {
-      filter: "block_number_lte:$cutoff",
-      declarations: ",$cutoff:BigInt!",
-      variables: { cutoff: String(block) },
-    });
+    };
+    const actual = await page(options.ethereum, entity, fields, filter);
+    const expected = await page(oldUrl, entity, fields, filter);
     compareClaimers(actual, expected);
-    counts[entity] = actual.length;
+    counts[entity] = { block, count: actual.length };
   }
   const unexpected = await gql(
     options["old-phala"],
     "query($cutoff:BigInt!){claimeds(first:1,where:{block_number_lte:$cutoff}){id}}",
-    { cutoff: String(block) },
+    { cutoff: String(phalaBlock) },
   );
   assert.equal(
     rows(unexpected.claimeds).length,

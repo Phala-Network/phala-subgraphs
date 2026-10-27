@@ -8,6 +8,7 @@ import {
   test,
 } from "matchstick-as";
 import {
+  Approval,
   Deposit,
   Transfer,
   RewardsSettled,
@@ -17,6 +18,7 @@ import {
 import { assetsAt } from "../src/assets";
 import { IMPLEMENTATION, VAULT, ZERO } from "../src/constants";
 import {
+  handleApproval,
   handleDeposit,
   handleShareTransfer,
   handleRewardsSettled,
@@ -261,4 +263,59 @@ test("settlement counters keep raw last values separate from midnight accrual", 
     "settlementAssets",
     "1025",
   );
+});
+
+test("pre-Upgraded logs with a new treasury ratio flag checkpoint-only without halting", () => {
+  const previous = vaultState();
+  previous.save();
+  // This earlier log reads the later upgrade's end-of-block getters, while
+  // our stored implementation address still names the reviewed contract.
+  mockVault(1588204810, 2000, 100, 10, 10001);
+  const approval = changetype<Approval>(event());
+  approval.logIndex = BigInt.fromI32(1);
+  handleApproval(approval);
+  assert.fieldEquals("VaultState", "current", "implementation", IMPLEMENTATION);
+  assert.fieldEquals(
+    "VaultState",
+    "current",
+    "vaultImplementationReviewed",
+    "false",
+  );
+  assert.fieldEquals("Latest", "current", "accrualMode", "checkpoint-only");
+  assert.fieldEquals("Latest", "current", "vaultTotalAssets", "2000");
+  const upgraded = changetype<Upgraded>(event());
+  upgraded.logIndex = BigInt.fromI32(2);
+  upgraded.parameters = [
+    new ethereum.EventParam(
+      "implementation",
+      ethereum.Value.fromAddress(
+        Address.fromString("0x0000000000000000000000000000000000000001"),
+      ),
+    ),
+  ];
+  handleUpgraded(upgraded);
+  assert.entityCount("VaultEvent", 2);
+  handleBlock(block(1588291200));
+  assert.fieldEquals(
+    "ChainDay",
+    "2020-05-01",
+    "vaultImplementationReviewed",
+    "false",
+  );
+});
+test("future checkpoint evaluation persists checkpoint-only instead of halting", () => {
+  const state = vaultState();
+  const amounts = assetsAt(
+    state,
+    state.checkpointTime.minus(BigInt.fromI32(1)),
+  );
+  assert.bigIntEquals(amounts.total, BigInt.fromI32(1000));
+  assert.bigIntEquals(amounts.treasury, BigInt.fromI32(20));
+  assert.fieldEquals(
+    "VaultState",
+    "current",
+    "vaultImplementationReviewed",
+    "false",
+  );
+  assert.fieldEquals("VaultState", "current", "accrualMode", "checkpoint-only");
 });

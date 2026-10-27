@@ -70,8 +70,9 @@ Holder counts and locked-asset flows.
    Deposit and Withdraw audit logs; fail a definite accounting contradiction.
 5. unstakeLocked equals every old checkpoint event exactly (a stronger audit
    than just the final checkpoint per block).
-6. Claimer complete ID sets and every legacy field at the same common block;
-   the old Phala claimer's `claimeds` must remain empty.
+6. Claimer complete ID sets and every legacy field at each old claimer's own
+   last indexed `_meta.block.number` (including paused claimers); new indexing
+   must reach both blocks. The old Phala claimer's `claimeds` must remain empty.
 
 `--stage server` (after PR2) runs gate 7: matching endpoint keys/types except the
 approved source metadata change, `/api/all` circulation within relative 1e-6,
@@ -97,8 +98,17 @@ subgraphs. Production data validation cannot be completed before a new deploymen
 
 ## Root-only remaining work
 
-D1: approved temporary feature test deploy; prove polling, filters and declared
-calls on Goldsky. D2: approved full historical deploy, sync, gates 1–6, tag move.
-PR2/PR3/PR4 then migrate consumers and run gates 7–8. Keep old deployments for
-rollback until the later approved seven-day soak and cleanup. See README for
-commands and the single shared operations document.
+Keep team-wide active subgraphs <=3 under the free 2,250 worker-hours/month
+allowance (~100K entities; estimated new footprint ~36–51K, verify after sync).
+Before D1 pause both old claimers (stale GraphQL remains available, new claims
+appear after apps cutover); keep vault-state active for the current server.
+D1: feature test deploy, verify, delete immediately. D2: deploy both full new
+subgraphs (vault-state + two new =3), sync, run gates 1–6, tag. Gate 1 must run
+before PR2 changes /api/snapshot and always use --snapshot-cache. Gate 5 reads
+active vault-state; gate 6 reads each paused claimer's own last indexed block.
+Delete vault-state after PR2 is live/verified; delete both claimers after PR3 is
+live/verified. Before deletion, resume the old subgraph and revert its consumer
+for rollback, pausing replacements as needed to stay <=3 active. Keep the paused
+window to days because extended pauses risk permanent Goldsky deletion. No
+old-version soak. PR4 then migrates the analytics cache and runs gate 8. See
+README for commands and the single shared operations document.

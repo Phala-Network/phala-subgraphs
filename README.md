@@ -10,7 +10,8 @@ Two independent Goldsky subgraphs share the mappings in this repository:
 Consumers use each deployment's `prod` tag. This PR prepares the replacements;
 no deployment, tag move, repository rename, or deletion is part of the change.
 The existing `phala-vault-state`, `khala-claimer` and `phala-claimer` deployments
-remain the rollback path until cutover and the subsequent seven-day soak.
+follow the budgeted pause/deploy/delete schedule below; old versions are removed
+after their consumer cutover is verified.
 
 [Specification and parity gates](./SPEC.md). The circulation server's
 [OPERATIONS.md](https://github.com/Phala-Network/pha-circulation-server/blob/main/docs/OPERATIONS.md)
@@ -121,8 +122,11 @@ implementation is `0xC0b39989381D8C88b7ef82A80d4C90540E70862A`.
 An unknown implementation keeps indexing token events, holders and claimers,
 but sets `vaultImplementationReviewed: false` and `accrualMode: "checkpoint-only"`.
 It uses checkpoint asset values without extrapolation; APR is zero. If a getter
-has disappeared, the last complete checkpoint is retained. Both `ChainDay` and
-`VaultDay` carry the flag so a cached daily row cannot silently look verified.
+has disappeared, the last complete checkpoint is retained. Getter values
+incompatible with the reviewed formula (future checkpoints or ratios above
+10000) also flag checkpoint-only mode, including logs before `Upgraded` in the
+same block; those logs read the new implementation's end-of-block getters. Both
+`ChainDay` and `VaultDay` carry the flag so a cached daily row cannot silently look verified.
 Before the Vault exists (and on Base), the flag is true, the implementation is
 the zero address and mode is `inactive`.
 
@@ -160,17 +164,30 @@ has its own builtins and import conventions. Scripts use recommended lint rules.
 ## Deploy and tag (root operator only)
 
 These commands describe the later D1/D2 steps; they have **not** been run for
-this PR. Confirm Goldsky authentication and the **Scale** plan before deploying.
-Starter is a one-time credit and can pause the claim-page dependency.
+this PR. Confirm Goldsky authentication and the **Scale free allowance** before
+deploying. Starter is a one-time credit and can pause the claim-page dependency.
 
-1. D1: deploy a temporary short-range copy to test topic filters, declared calls,
-   and Clock polling on Goldsky. Keep the test's source start blocks and the
-   initial accumulator date consistent; it is a feature smoke test, not a
-   historical parity candidate. Observe `_meta.hasIndexingErrors == false`,
-   successful Vault checkpoints, and changing `Latest.timestamp` through a quiet
-   polling interval. Delete the test version afterwards.
-2. D2: deploy the full manifests, with no graft. Deploy the **compiled manifest
-   directories**, so Goldsky can use its standard `subgraph.yaml` filename:
+Stay within **2,250 worker-hours/month** (about three always-on subgraphs) and
+**~100K entities**. Never run more than **three active subgraphs team-wide**,
+including feature tests and old versions. The review estimated ~36–51K entities;
+check actual storage after sync. Do not retain active old versions for a soak.
+
+1. Before D1, pause `phala-claimer/1.0.0` and `khala-claimer/1.0.0`.
+   `phala-vault-state` stays active because the current circulation server needs
+   fresh data. Root verified that paused subgraphs still serve GraphQL queries
+   with stale data; claims made during the pause become visible in apps only
+   after cutover to the new subgraph. Save each paused claimer's `_meta.block`.
+   Keep this pause to **days**: Goldsky can permanently delete subgraphs left
+   paused for an extended period.
+2. D1: deploy a temporary short-range copy to test topic filters, declared calls,
+   and Clock polling (at most two active: vault-state + test). Keep the test's
+   source start blocks and initial accumulator date consistent. Observe
+   `_meta.hasIndexingErrors == false`, successful Vault checkpoints and changing
+   `Latest.timestamp` through a quiet polling interval. **Delete the test
+   immediately** after feature verification, before starting D2.
+3. D2: deploy the full manifests without a graft. Active subgraphs are now
+   `phala-vault-state` + `phala-ethereum` + `phala-base` = **three**. Deploy the
+   compiled directories so Goldsky can use its standard `subgraph.yaml` name:
 
    ```bash
    bun run codegen
@@ -179,24 +196,35 @@ Starter is a one-time credit and can pause the claim-page dependency.
    goldsky subgraph deploy phala-base/1.0.0 --path build/base
    ```
 
-3. Wait for both deployments to sync and run the subgraph parity stage below.
-   Keep the JSON report and snapshot cache as cutover evidence.
-4. After the gates pass and the user approves the tag move:
+4. Wait for full sync, then run gates 1–6 **before PR2 changes the old snapshot
+   API**, always passing `--snapshot-cache`. Gate 5 uses the still-active
+   `phala-vault-state`. Gate 6 compares each claimer's complete ID/field set at
+   that paused claimer's own last indexed `_meta.block.number`, excluding newer
+   claims indexed only by the new subgraph. Keep the report and cache as evidence.
+   After the gates pass and the user approves, tag the new versions:
 
    ```bash
    goldsky subgraph tag create phala-ethereum/1.0.0 --tag prod
    goldsky subgraph tag create phala-base/1.0.0 --tag prod
    ```
 
+5. After PR2 (circulation server) is live and verified, delete `phala-vault-state`.
+   After PR3 (apps) is live and verified, delete both old paused claimers. There
+   is no old-version soak under this budget. Before deletion, rollback means
+   resuming the relevant old/paused subgraph and reverting its consumer; pause
+   replacement versions first if necessary to keep the active total at three.
+   After deletion, rollback requires redeploying and resyncing within the same
+   budget, rather than an immediate resume.
+
 Endpoints are `https://api.goldsky.com/api/public/project_cmdgxxcewrqdi01wx9e7md0ek/subgraphs/<name>/prod/gn`.
-For future versions, deploy alongside the current version, verify, then move
-the tag. Keep the old versions for rollback until the agreed soak completes.
-No Goldsky mutation runs from CI.
+For future upgrades, the two current subgraphs leave one slot for a replacement:
+deploy one replacement, verify, move its tag, delete its old version, then repeat
+for the other chain. No Goldsky mutation runs from CI.
 
 `indexerHints.prune: auto` retains immutable history while pruning old mutable
 versions. Consumers query daily/event entities plus current `Latest`; the
 verifier does not time-travel the new subgraphs. It filters immutable events to
-a common block when comparing claimers and Vault audit records.
+each old reference's comparison block for claimers and Vault audit records.
 
 ## Parity verification
 
@@ -206,6 +234,10 @@ not load secret files. A run covers all deployment dates through the available
 ChainDays. The old snapshot scan is sequential and can take hours. Requests
 are paced to at most four per second. `--snapshot-cache` stores public old API
 responses as NDJSON and resumes completed reads on rerun; it never skips a gate.
+**Always pass `--snapshot-cache` for gate 1, and finish gate 1 before PR2 switches
+`/api/snapshot` to the new subgraphs.** Preserve that independent old-API baseline
+for later reruns; reading the migrated endpoint would compare the new data with
+itself.
 Archive locations are recorded in [SPEC.md](./SPEC.md).
 
 ```bash
@@ -252,7 +284,9 @@ check, each settlement-day asset delta must equal the rewards plus net
 deposit/withdraw flows between its and the previous settlement day's final
 settlement events. The report includes per-day residuals; a nonzero residual
 contradicts the verified contract's accounting and fails the gate. Checkpoints
-match at every legacy event, and claimers match every ID and every field.
+match at every legacy event, and claimers match every ID and every field at
+each old claimer's last indexed block, even while that claimer is paused. The
+report records each comparison block; the new subgraph must have reached both.
 
 Optional independent raw balance/asset spot checks use `ARCHIVE_RPC_URL`
 (Ethereum) and `BASE_ARCHIVE_RPC_URL`, or `--archive-rpc` /

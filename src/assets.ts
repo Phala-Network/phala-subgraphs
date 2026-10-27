@@ -16,20 +16,28 @@ export class Assets {
     this.treasury = treasury;
   }
 }
+export function markUnreviewed(state: VaultState): void {
+  state.vaultImplementationReviewed = false;
+  state.accrualMode = "checkpoint-only";
+}
 // Sourcify Vault._calculateRewards: treasuryRatio is basis points; round
 // treasury down first, then give the remainder to shareholders.
 export function assetsAt(state: VaultState | null, timestamp: BigInt): Assets {
   if (state == null) return new Assets(BigInt.zero(), BigInt.zero());
+  if (
+    state.vaultImplementationReviewed &&
+    (state.checkpointTime.gt(timestamp) ||
+      state.treasuryRatio.gt(BigInt.fromI32(10000)))
+  ) {
+    markUnreviewed(state);
+    state.save();
+  }
   let total = BigInt.zero();
   if (
     state.vaultImplementationReviewed &&
     !state.paused &&
     state.shareSupply.gt(BigInt.zero())
   ) {
-    assert(
-      timestamp.ge(state.checkpointTime),
-      "Vault checkpoint is in the future",
-    );
     total = state.rewardRate.times(timestamp.minus(state.checkpointTime));
   }
   const treasury = total.times(state.treasuryRatio).div(BigInt.fromI32(10000));
