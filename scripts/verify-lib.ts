@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 
 export type Row = Record<string, unknown>;
+export const CHAINS = ["ethereum", "base"] as const;
+export type Chain = (typeof CHAINS)[number];
+export const START_DATES: Record<Chain, string> = {
+  ethereum: "2020-04-30",
+  base: "2024-04-05",
+};
+export const CLAIM_FIELDS =
+  "id block_number timestamp_ transactionHash_ contractId_ user free staked";
 export const WAD = 10n ** 18n;
 export const record = (value: unknown): Row => {
   assert.ok(
@@ -66,6 +74,96 @@ export const dated = (values: Row[], field = "date"): Map<string, Row> => {
   }
   return map;
 };
+export function selectedChains(value: string): Chain[] {
+  const selected = value.split(",");
+  assert.ok(
+    selected.length > 0 &&
+      selected.every((chain) => CHAINS.some((known) => known === chain)) &&
+      new Set(selected).size === selected.length,
+    "--chains must be ethereum, base, or ethereum,base",
+  );
+  return CHAINS.filter((chain) => selected.includes(chain));
+}
+export function snapshotDates(now = Date.now()): string[] {
+  const dates: string[] = [];
+  const today = new Date(now).toISOString().slice(0, 10);
+  for (
+    let timestamp = Date.parse(START_DATES.ethereum);
+    timestamp < Date.parse(today);
+    timestamp += 86400000
+  )
+    dates.push(new Date(timestamp).toISOString().slice(0, 10));
+  return dates;
+}
+export function circulationTotal(
+  date: string,
+  chains: Chain[],
+  days: Partial<Record<Chain, Row>>,
+  old: Row | undefined,
+): number {
+  let total = 0;
+  for (const chain of CHAINS) {
+    if (date < START_DATES[chain]) continue;
+    if (chains.includes(chain)) {
+      const day = days[chain];
+      assert.ok(day, `Archive ${chain} date missing ${date}`);
+      total += pha(day.circulation);
+    } else {
+      assert.ok(old, `Missing old snapshot for hybrid total ${date}`);
+      total += finite(record(old[chain]).circulation);
+    }
+  }
+  return total;
+}
+export function claimerExport(value: unknown, chain: "khala" | "phala") {
+  const data = record(value);
+  assert.ok(
+    text(data.subgraph).startsWith(`${chain}-claimer/`),
+    "Claimer export subgraph differs",
+  );
+  const block = data.block;
+  assert.ok(
+    typeof block === "number" && Number.isSafeInteger(block) && block > 0,
+    "Invalid claimer export block",
+  );
+  const meta = record(data.meta);
+  assert.equal(record(meta.block).number, block, "Export meta block differs");
+  assert.equal(meta.hasIndexingErrors, false, "Export has indexing errors");
+  assert.ok(text(meta.deployment).length > 0, "Missing export deployment");
+  const entity = chain === "khala" ? "claimeds" : "claimedAndBridgeds";
+  const fields =
+    `${CLAIM_FIELDS} ${chain === "khala" ? "receiver" : "l1Receiver l2Receiver"}`
+      .split(" ")
+      .sort();
+  const claims = rows(data[entity]);
+  const ids = new Set<string>();
+  for (const claim of claims) {
+    assert.deepEqual(Object.keys(claim).sort(), fields, "Export fields differ");
+    const id = text(claim.id);
+    assert.ok(id.length > 0 && !ids.has(id), "Empty or duplicate export ID");
+    ids.add(id);
+    assert.ok(
+      integer(claim.block_number) >= 0n &&
+        integer(claim.block_number) <= BigInt(block),
+      "Export claim exceeds comparison block",
+    );
+    assert.ok(integer(claim.timestamp_) >= 0n);
+    text(claim.transactionHash_);
+    text(claim.contractId_);
+    for (const field of fields) {
+      if (["free", "staked"].includes(field)) {
+        if (claim[field] !== null) assert.ok(integer(claim[field]) >= 0n);
+      } else if (claim[field] !== null) text(claim[field]);
+    }
+  }
+  if (chain === "phala")
+    assert.equal(
+      rows(data.claimeds).length,
+      0,
+      "Phala-only Claimed entity is no longer empty: spec needs review",
+    );
+  return { block, meta, entity, claims };
+}
 export function exportRows(
   value: unknown,
   query: string,

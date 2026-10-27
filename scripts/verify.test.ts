@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   ADDRESSES,
+  circulationTotal,
+  claimerExport,
   compareCheckpoints,
   compareClaimers,
   compareSnapshot,
@@ -8,6 +10,8 @@ import {
   compareVaultConsistency,
   deterministicSample,
   type Row,
+  selectedChains,
+  snapshotDates,
   transferDelta,
   wei,
 } from "./verify-lib";
@@ -128,6 +132,100 @@ test("claimer parity compares every field and the complete ID set", () => {
   compareClaimers([row], [row]);
   expect(() => compareClaimers([{ ...row, free: "11" }], [row])).toThrow();
   expect(() => compareClaimers([], [row])).toThrow();
+});
+const exportedClaim: Row = {
+  id: "0xabc-12",
+  block_number: "100",
+  timestamp_: "1791504001",
+  transactionHash_: "0xabc",
+  contractId_: "0x123",
+  user: null,
+  free: "10",
+  staked: "20",
+  receiver: null,
+};
+test("exported claims require the complete schema, unique IDs and an indexed cutoff", () => {
+  const value = {
+    subgraph: "khala-claimer/1.0.0",
+    block: 100,
+    meta: {
+      block: { number: 100 },
+      hasIndexingErrors: false,
+      deployment: "Qm",
+    },
+    claimeds: [exportedClaim],
+  };
+  expect(claimerExport(value, "khala").claims).toEqual([exportedClaim]);
+  expect(() => claimerExport(value, "phala")).toThrow("subgraph differs");
+  expect(() => claimerExport({ ...value, block: 99 }, "khala")).toThrow(
+    "meta block",
+  );
+  expect(() =>
+    claimerExport(
+      { ...value, claimeds: [exportedClaim, exportedClaim] },
+      "khala",
+    ),
+  ).toThrow("duplicate");
+  expect(() =>
+    claimerExport(
+      { ...value, claimeds: [{ ...exportedClaim, block_number: "101" }] },
+      "khala",
+    ),
+  ).toThrow("exceeds");
+  const { contractId_: _, ...missingField } = exportedClaim;
+  expect(() =>
+    claimerExport({ ...value, claimeds: [missingField] }, "khala"),
+  ).toThrow("fields differ");
+  const phala = {
+    ...value,
+    subgraph: "phala-claimer/1.0.0",
+    claimeds: [],
+    claimedAndBridgeds: [],
+  };
+  expect(claimerExport(phala, "phala").claims).toEqual([]);
+  expect(() =>
+    claimerExport({ ...phala, claimeds: undefined }, "phala"),
+  ).toThrow();
+  expect(() =>
+    claimerExport({ ...phala, claimeds: [exportedClaim] }, "phala"),
+  ).toThrow("no longer empty");
+});
+test("partial totals use only selected new chains, old API counterparts, and zero Base before deployment", () => {
+  const days = {
+    ethereum: { circulation: "2000000000000000000" },
+    base: { circulation: "3000000000000000000" },
+  };
+  const snapshot = {
+    ethereum: { circulation: "20" },
+    base: { circulation: "30" },
+  };
+  expect(circulationTotal("2026-10-10", ["ethereum"], days, snapshot)).toBe(32);
+  expect(circulationTotal("2026-10-10", ["base"], days, snapshot)).toBe(23);
+  expect(
+    circulationTotal("2026-10-10", ["ethereum", "base"], days, undefined),
+  ).toBe(5);
+  expect(
+    circulationTotal("2021-02-08", ["base"], {}, { ...snapshot, base: null }),
+  ).toBe(20);
+  expect(() => circulationTotal("2026-10-10", ["base"], {}, snapshot)).toThrow(
+    "base date missing",
+  );
+  expect(() =>
+    circulationTotal("2026-10-10", ["base"], days, undefined),
+  ).toThrow("hybrid total");
+});
+test("chain selection rejects ambiguous inputs and prefetch ends at UTC yesterday", () => {
+  expect(selectedChains("base")).toEqual(["base"]);
+  expect(selectedChains("base,ethereum")).toEqual(["ethereum", "base"]);
+  for (const invalid of ["", "all", "ethereum,ethereum", "ethereum,base,other"])
+    expect(() => selectedChains(invalid)).toThrow("--chains");
+  const dates = snapshotDates(Date.parse("2026-10-27T00:01:00Z"));
+  expect(dates[0]).toBe("2020-04-30");
+  expect(dates.at(-1)).toBe("2026-10-26");
+  expect(dates).not.toContain("2026-10-27");
+  expect(snapshotDates(Date.parse("2024-03-01T23:59:59Z"))).toContain(
+    "2024-02-29",
+  );
 });
 test("checkpoint gate uses immutable event IDs and exact cumulative locked assets", () => {
   const checkpoints = [

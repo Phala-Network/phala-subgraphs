@@ -167,45 +167,50 @@ leaving its lint/import checks to the mapping compiler.
 
 Use Goldsky's **Scale free allowance**: **2,250 worker-hours/month**, **~100K
 entities**, and **at most three active subgraphs team-wide**, including temporary
+versions. Goldsky also caps **deployed subgraphs at three**, including paused
 versions. Check storage after sync. Starter has a one-time credit and can pause
 services when exhausted.
 
-1. Pause the legacy `phala-claimer/1.0.0` and `khala-claimer/1.0.0`; keep
-   `phala-vault-state` active for the circulation server. Paused subgraphs serve
-   stale GraphQL data; claims made during the pause appear after apps switch to
-   the new subgraph. Save each claimer's `_meta.block`. Keep pauses to **days**:
-   an extended pause risks permanent deletion by Goldsky.
-2. Deploy a temporary short-range feature test, verify topic filters, declared
-   calls and Clock polling, then **delete it immediately**. Observe
+1. Export both legacy claimers' complete entity sets and `_meta` at their paused
+   blocks before deleting either. Paused subgraphs still occupy deployment slots
+   and serve stale GraphQL data. Keep pauses to **days**: an extended pause risks
+   permanent deletion. Keep `phala-vault-state` active until the circulation
+   server cutover is verified.
+2. If all three slots are occupied, delete the least-active exported claimer to
+   free a slot. Its claim-log details are unavailable until apps switch; claim
+   eligibility remains on-chain. Deploy a temporary feature test, verify topic
+   filters, declared calls and Clock polling, then **delete it immediately**. Observe
    `_meta.hasIndexingErrors=false`, Vault checkpoints and `Latest.timestamp`
    advancing through a quiet polling interval. Keep test start blocks and
    accumulator dates consistent; this is not a historical parity candidate.
-3. Deploy both full manifests without a graft. Active total: legacy vault-state
-   plus the two new subgraphs = three. Goldsky uses the compiled directories'
-   `subgraph.yaml`:
+3. Deploy full Ethereum history without a graft. Goldsky uses the compiled
+   directory's `subgraph.yaml`:
 
    ```bash
    bun run codegen
    bun run build
    goldsky subgraph deploy phala-ethereum/1.0.0 --path build/ethereum
-   goldsky subgraph deploy phala-base/1.0.0 --path build/base
    ```
 
-4. Wait for full sync and run the subgraph parity checks below. Finish gate 1
-   **before switching `/api/snapshot` to the new subgraphs**, always with
-   `--snapshot-cache`. Vault checkpoints use active vault-state; each claimer
-   comparison uses its paused last indexed block. Then tag:
+4. Wait for full sync, run `--chains ethereum` parity with the claimer exports,
+   then tag Ethereum and switch apps. Vault checkpoints use active vault-state;
+   claimers compare at each export's block.
 
    ```bash
    goldsky subgraph tag create phala-ethereum/1.0.0 --tag prod
-   goldsky subgraph tag create phala-base/1.0.0 --tag prod
    ```
 
-5. Delete legacy vault-state after the circulation server cutover is verified;
-   delete the paused claimers after the apps cutover is verified. Before
-   deletion, rollback resumes the old subgraph and reverts its consumer, pausing
-   replacements as needed to stay within three active subgraphs. After deletion,
-   rollback requires redeploying and resyncing.
+5. After the apps cutover is verified, delete the remaining legacy claimer and
+   deploy Base: `goldsky subgraph deploy phala-base/1.0.0 --path build/base`.
+   Wait for sync, run `--chains base` parity, then tag it:
+   `goldsky subgraph tag create phala-base/1.0.0 --tag prod`.
+6. Finish gate 1 for both chains **before switching `/api/snapshot`**, always
+   with `--snapshot-cache`. Delete legacy vault-state only after the circulation
+   server cutover is verified.
+
+Before deletion, rollback resumes the old subgraph and reverts its consumer.
+After deletion, rollback requires a free deployment slot, redeploying and
+resyncing the old version; pausing a replacement does not free a slot.
 
 For subsequent upgrades, use the spare third slot for one replacement at a time:
 deploy, verify, move its tag, delete its old version, then update the other chain.
@@ -222,7 +227,15 @@ and `GOLDSKY_BASE_URL` to synced version endpoints, `SNAPSHOTS_NDJSON` to the
 
 ```bash
 mkdir -p /tmp/phala-parity
+bun run verify --prefetch-snapshots --snapshot-cache /tmp/phala-parity/snapshots.ndjson \
+  --output /tmp/phala-parity/prefetch.json
+bun run verify --stage subgraphs --chains ethereum \
+  --old-khala-export "$KHALA_EXPORT" --old-phala-export "$PHALA_EXPORT" \
+  --snapshot-cache /tmp/phala-parity/snapshots.ndjson --output /tmp/phala-parity/ethereum.json
+bun run verify --stage subgraphs --chains base \
+  --snapshot-cache /tmp/phala-parity/snapshots.ndjson --output /tmp/phala-parity/base.json
 bun run verify --stage subgraphs --snapshot-cache /tmp/phala-parity/snapshots.ndjson \
+  --old-khala-export "$KHALA_EXPORT" --old-phala-export "$PHALA_EXPORT" \
   --output /tmp/phala-parity/subgraphs.json
 bun run verify --stage server --preview "$SERVER_PREVIEW_URL" \
   --output /tmp/phala-parity/server.json
@@ -233,6 +246,20 @@ bun run verify --stage cache --d1-json "$D1_EXPORT_JSON" \
 Always preserve the snapshot cache from **before the circulation API cutover**;
 otherwise the reference could read the same new data. Cached reads resume the
 sequential old-API scan, which can take hours; requests are paced to four/second.
+`--prefetch-snapshots` only fills missing dates from 2020-04-30 through UTC
+yesterday; it needs no subgraph endpoints or archives and runs no gates.
+
+`--chains ethereum` or `--chains base` requires only that chain's endpoint and
+reports the other chain as pending (`partial-pass`). Archive totals combine the
+selected new chain with the other chain's old cached API circulation and frozen
+Substrate totals; Base contributes zero before deployment. Gates 4–6 are pending
+in a Base-only run. Full runs default to both chains; `server`, `cache` and `all`
+require both.
+
+Claimer exports use `{subgraph, block, meta, claimeds?, claimedAndBridgeds?}`;
+`meta` is the saved `_meta`. Khala requires `claimeds`; Phala requires both arrays
+and an empty `claimeds`. Each comparison uses its own export's `block`, so no
+live old endpoint is needed. Without exports, the runner uses live references.
 
 - `subgraphs`, gates 1–2: every date from 2020-04-30, exact exposed snapshot
   components; first-block differences require audited flows on at most 1% of
