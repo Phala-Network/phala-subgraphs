@@ -35,7 +35,7 @@ export const CLAIM_FIELDS = [
   "phalaFree",
   "phalaStaked",
 ];
-export function component(address: Address, ethereum: boolean): string {
+export function component(address: Address): string {
   const hex = address.toHexString();
   if (hex == "0x4731bc41b3cca4c2883b8ebb68cb546d5b3b4dd6") return "reward";
   if (hex == "0xcd38b15a419491c7c1238b0659f65c755792e257")
@@ -47,13 +47,13 @@ export function component(address: Address, ethereum: boolean): string {
   if (hex == "0xc832588193cd5ed2185dada4a531e0b26ec5b830") return "sygmaBridge";
   if (hex == "0x3ee18b2214aff97000d974cf647e7c347e8fa585")
     return "portalBridge";
-  if (ethereum && hex == "0x4a396b5c9a6fbc1bc0525f24ac0a246766f3ebef")
+  if (hex == "0x4a396b5c9a6fbc1bc0525f24ac0a246766f3ebef")
     return "sunsetReward";
-  if (ethereum && hex == VAULT) return "vaultBalance";
+  if (hex == VAULT) return "vaultBalance";
   return "";
 }
-export function inS(address: Address, ethereum: boolean): boolean {
-  return address.toHexString() == ZERO || component(address, ethereum) != "";
+export function inS(address: Address): boolean {
+  return address.toHexString() == ZERO || component(address) != "";
 }
 export function date(timestamp: BigInt): string {
   return new Date(timestamp.toI64() * 1000).toISOString().slice(0, 10);

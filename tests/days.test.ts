@@ -55,3 +55,34 @@ test("paused and zero share supply stop both accrual and APR", () => {
   );
   assert.stringEquals(apr(state, BigInt.fromI32(1000)).toString(), "0");
 });
+
+test("circulation excludes every reserve and Vault reward, while Portal escrow still circulates", () => {
+  const state = chainState();
+  state.totalSupply = BigInt.fromI32(10000);
+  state.reward = BigInt.fromI32(100);
+  state.sunsetReward = BigInt.fromI32(200);
+  state.phalaChainBridge = BigInt.fromI32(300);
+  state.khalaLegacyChainBridge = BigInt.fromI32(400);
+  state.khalaChainBridge = BigInt.fromI32(500);
+  state.sygmaBridge = BigInt.fromI32(600);
+  state.portalBridge = BigInt.fromI32(700);
+  state.vaultBalance = BigInt.fromI32(2000);
+  state.save();
+  const vault = vaultState();
+  vault.paused = true;
+  vault.unstakeLocked = BigInt.fromI32(30);
+  vault.save();
+  handleBlock(block(1588204801));
+  assert.fieldEquals("Latest", "current", "portalBridge", "700");
+  assert.fieldEquals("Latest", "current", "vaultReward", "950");
+  assert.fieldEquals("Latest", "current", "circulation", "6950");
+  handleBlock(block(1588291201));
+  assert.fieldEquals("ChainDay", "2020-05-01", "portalBridge", "700");
+  assert.fieldEquals("ChainDay", "2020-05-01", "circulation", "6950");
+  const current = chainState();
+  current.vaultBalance = BigInt.fromI32(1000);
+  current.save();
+  handleBlock(block(1588291202));
+  assert.fieldEquals("Latest", "current", "vaultReward", "-50");
+  assert.fieldEquals("Latest", "current", "circulation", "7950");
+});

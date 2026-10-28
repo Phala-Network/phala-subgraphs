@@ -1,18 +1,17 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { args, claimers, load, main } from "./verify";
 import { type Row, record, snapshotDates, text } from "./verify-lib";
 
 let directory: string;
 beforeAll(async () => {
-  await mkdir("/tmp/phala-subgraphs-pr1", { recursive: true });
-  directory = await mkdtemp("/tmp/phala-subgraphs-pr1/verify-tests-");
+  directory = await mkdtemp(`${import.meta.dir}/.verify-tests-`);
 });
 afterAll(async () => {
   if (directory) await rm(directory, { recursive: true });
 });
 
-test("per-chain loading avoids unavailable deployments; exports use independent cutoffs", async () => {
+test("Ethereum loading and claimer exports use independent cutoffs", async () => {
   const requests: { path: string; query: string; cutoff: unknown }[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -23,8 +22,7 @@ test("per-chain loading avoids unavailable deployments; exports use independent 
       const query = text(body.query);
       const variables = record(body.variables);
       requests.push({ path, query, cutoff: variables.cutoff });
-      if (!["/ethereum", "/base"].includes(path))
-        return new Response(null, { status: 410 });
+      if (path !== "/ethereum") return new Response(null, { status: 410 });
       let data: Row;
       if (query.includes("_meta"))
         data = {
@@ -61,20 +59,6 @@ test("per-chain loading avoids unavailable deployments; exports use independent 
     },
   });
   try {
-    const base = await load(
-      args([
-        "--chains",
-        "base",
-        "--base",
-        `${server.url}base`,
-        "--ethereum",
-        `${server.url}unavailable`,
-      ]),
-    );
-    expect(base.ethereum).toEqual([]);
-    expect(base.meta.ethereum).toBeUndefined();
-    expect(requests.every((request) => request.path === "/base")).toBe(true);
-    requests.length = 0;
     const paths = [];
     for (const [chain, block] of [
       ["khala", 100],
@@ -98,12 +82,8 @@ test("per-chain loading avoids unavailable deployments; exports use independent 
       );
     }
     const options = args([
-      "--chains",
-      "ethereum",
       "--ethereum",
       `${server.url}ethereum`,
-      "--base",
-      `${server.url}unavailable`,
       "--old-khala",
       `${server.url}deleted-khala`,
       "--old-phala",
@@ -111,7 +91,6 @@ test("per-chain loading avoids unavailable deployments; exports use independent 
       ...paths,
     ]);
     const ethereum = await load(options);
-    expect(ethereum.base).toEqual([]);
     const report = await claimers(options, ethereum);
     expect(record(report.claimeds).block).toBe(100);
     expect(record(report.claimedAndBridgeds).block).toBe(101);
@@ -133,9 +112,8 @@ test("per-chain loading avoids unavailable deployments; exports use independent 
     await expect(claimers(options, ethereum)).rejects.toThrow(
       "has not reached",
     );
-    expect(() => args(["--stage", "all", "--chains", "ethereum"])).toThrow(
-      "both chains",
-    );
+    for (const option of ["--chains", "--base", "--base-archive-rpc"])
+      expect(() => args([option, "base"])).toThrow("Unknown option");
   } finally {
     await server.stop(true);
   }
@@ -178,8 +156,6 @@ test("prefetch resumes only missing dates through yesterday without subgraph or 
       output,
       "--ethereum",
       `${server.url}unavailable`,
-      "--base",
-      `${server.url}unavailable`,
     ];
     await main(argv);
     expect(requested).toEqual(missing);
@@ -200,3 +176,138 @@ test("prefetch resumes only missing dates through yesterday without subgraph or 
     await server.stop(true);
   }
 });
+
+test("server gate uses cached snapshot shapes, Portal-inclusive totals and null Base", async () => {
+  const wad = 10n ** 18n;
+  const amount = (value: number) => String(BigInt(value) * wad);
+  const day = {
+    id: "2026-10-10",
+    date: "2026-10-10",
+    chain: "ethereum",
+    totalSupply: amount(1000),
+    reward: amount(875),
+    sunsetReward: "0",
+    phalaChainBridge: "0",
+    khalaLegacyChainBridge: "0",
+    khalaChainBridge: "0",
+    sygmaBridge: "0",
+    portalBridge: amount(25),
+    vaultReward: "0",
+    vaultUnstakeLocked: "0",
+    circulation: amount(125),
+    vaultImplementationReviewed: true,
+  };
+  const ethereum = {
+    totalSupply: "1000",
+    reward: "875",
+    sunsetReward: "0",
+    phalaChainBridge: "0",
+    khalaChainBridge: "0",
+    sygmaBridge: "0",
+    portalBridge: "25",
+    vaultReward: "0",
+    vaultUnstakeLocked: "0",
+    circulation: "100",
+  };
+  const oldSnapshot = {
+    date: "2026-10-10T00:00:00.000000Z",
+    ethereum,
+    base: { totalSupply: "20", circulation: "20" },
+    totalCirculation: "120",
+  };
+  const cachePath = `${directory}/server-snapshots.ndjson`;
+  await writeFile(cachePath, `${JSON.stringify(oldSnapshot)}\n`);
+  let invalidBase = false;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/ethereum") {
+        const query = text(record(await request.json()).query);
+        let data: Row;
+        if (query.includes("_meta"))
+          data = {
+            _meta: {
+              deployment: "new",
+              hasIndexingErrors: false,
+              block: { number: 102, timestamp: Math.floor(Date.now() / 1000) },
+            },
+          };
+        else if (query.includes("latest"))
+          data = {
+            latest: {
+              timestamp: String(Math.floor(Date.now() / 1000)),
+              vaultImplementationReviewed: true,
+            },
+          };
+        else if (query.includes("chainDays")) data = { chainDays: [day] };
+        else if (query.includes("vaultDays")) data = { vaultDays: [] };
+        else if (query.includes("vaultEvents")) data = { vaultEvents: [] };
+        else return new Response(null, { status: 400 });
+        return Response.json({ data });
+      }
+      if (path === "/old/api/all")
+        return Response.json({
+          ...oldSnapshot,
+          sources: {
+            ethereum: {
+              blockNumber: "102",
+              headBlockNumber: "102",
+              lagBlocks: "0",
+            },
+            base: { blockNumber: "102" },
+          },
+        });
+      const actual = {
+        ...oldSnapshot,
+        ethereum: { ...ethereum, circulation: "125" },
+        base: invalidBase ? oldSnapshot.base : null,
+        totalCirculation: "125",
+      };
+      if (path === "/preview/api/all")
+        return Response.json({
+          ...actual,
+          sources: {
+            ethereum: {
+              blockNumber: "102",
+              indexedAt: "2026-10-10T00:00:00Z",
+              lagSeconds: "0",
+            },
+            base: null,
+          },
+        });
+      if (path === "/preview/api/circulation") return new Response("125");
+      if (path === "/preview/api/snapshot") return Response.json(actual);
+      return new Response(null, { status: 410 });
+    },
+  });
+  const output = `${directory}/server-report.json`;
+  const argv = [
+    "--stage",
+    "server",
+    "--ethereum",
+    `${server.url}ethereum`,
+    "--old-api",
+    `${server.url}old`,
+    "--preview",
+    `${server.url}preview`,
+    "--snapshot-cache",
+    cachePath,
+    "--output",
+    output,
+  ];
+  try {
+    await main(argv);
+    const report = record(JSON.parse(await readFile(output, "utf8")));
+    expect(report.status).toBe("pass");
+    expect(record(record(report.gates)["7"]).snapshots).toBe(1);
+    invalidBase = true;
+    await expect(main(argv)).rejects.toThrow(
+      "Base compatibility field must be null",
+    );
+    expect(JSON.parse(await readFile(output, "utf8")).status).toBe("fail");
+  } finally {
+    await server.stop(true);
+  }
+}, 15000);
