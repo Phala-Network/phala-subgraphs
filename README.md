@@ -1,93 +1,302 @@
-# phala-vault-state-subgraph
+# Phala subgraphs
 
-Goldsky subgraph that tracks `vaultUnstakeLocked`: PHA held by the Phala Vault
-for pending unstake requests. The
-[circulation API](https://github.com/Phala-Network/pha-circulation-server) reads
-this value and computes everything else over RPC at the same block.
+Two Goldsky subgraphs share the mappings in this repository:
 
-Vault: `0x21d6eC8fc14CaAcc55aFA23cBa66798DAB3a0ec0` (Ethereum, deployed at
-block `21596326`).
+| Manifest / deployment              | Indexed data                                                        | Token / start block                                     | Clock interval |
+| ---------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------- | -------------- |
+| `ethereum.yaml` / `phala-ethereum` | PHA circulation, Vault metrics and flows, Khala/Phala sunset claims | `0x6c5ba91642f10282b576d91922ae6448c9d52f4e` / 9975568  | 25 blocks      |
+| `base.yaml` / `phala-base`         | Base PHA circulation                                                | `0x336c9297afb7798c292e9f80d8e566b947f291f0` / 12743284 | 150 blocks     |
 
-## Rules
+Consumers use the `prod` tag:
+`https://api.goldsky.com/api/public/project_cmdgxxcewrqdi01wx9e7md0ek/subgraphs/<name>/prod/gn`.
+See the circulation server's
+[operations guide](https://github.com/Phala-Network/pha-circulation-server/blob/main/docs/OPERATIONS.md)
+for the wider stack.
 
-Starting from zero, in canonical log order:
+## Data reference
 
-| Event | Change |
-| --- | --- |
-| `Withdraw` | `+ assets` |
-| `Claimed` | `- assets` |
-| `Deposit` with `sender == Vault` | `- assets` (user deposits are ignored) |
+[schema.graphql](./schema.graphql) defines the complete GraphQL contract. Token
+amounts are integer **wei** (18 decimals); timestamps are Unix seconds.
+`sharePrice` and `apr` are `BigDecimal` strings: assets / shares and an annual
+fraction, respectively. Both are zero without shares; APR is also zero when
+paused, assets are zero, or the implementation is unreviewed.
 
-These rules match the archived `ethereum-circulation-squid`. The reconstruction
-was checked against its database: at block `25390163` both give
-`48383275.952282417636691459` PHA from 764 `Withdraw`, 619 `Claimed`, and 73
-Vault-sent `Deposit` events.
+| Entity                     | Fields and meaning                                                                                                                                                                     |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ChainState`, `VaultState` | Mutable accumulators, singleton `current`                                                                                                                                              |
+| `Latest`                   | Singleton `current`: circulation components, Vault assets/locked amount, `shareSupply`, `sharePrice`, `apr`, `stakers`, and implementation status; refreshed on events and Clock polls |
+| `ChainDay`                 | Immutable midnight circulation components; ID and `date` are `YYYY-MM-DD`                                                                                                              |
+| `VaultDay`                 | Immutable midnight Vault metrics and preceding-day flow totals; see below                                                                                                              |
+| `ClaimDay`                 | Preceding-day `khalaClaimCount`, `khalaFree`, `khalaStaked`, `phalaClaimCount`, `phalaFree`, `phalaStaked`                                                                             |
+| `Transfer`                 | PHA logs touching S: `from`, `to`, `amount`, block/time, transaction hash and log index; each log stored once                                                                          |
+| `VaultEvent`               | Vault log kind, assets/shares, raw `settlementAssets`, block/time and transaction/log identity; `unstakeLockedAfter` follows log order, checkpoint fields are end-of-block reads       |
+| `Holder`                   | Share balance by address, including zero balances; `stakers` counts positive balances excluding the zero address                                                                       |
+| `Claimed`                  | Khala claims only; legacy no-code schema                                                                                                                                               |
+| `ClaimedAndBridged`        | Phala claims only; legacy no-code schema                                                                                                                                               |
 
-## Entities
+Claimer entities preserve nullable event parameters, lowercase string addresses,
+`contractId_`, `transactionHash_`, `timestamp_`, `block_number`, and string IDs
+`<transaction hash>-<block log index>`. Khala uses `receiver`; Phala uses
+`l1Receiver` / `l2Receiver`. Apps' `where: {user: $user}` queries retain their
+existing shape. The Phala claimer's empty `Claimed` event stream is not mapped.
 
-- `VaultState` (`id: "current"`): the latest value and the block it last changed.
-- `VaultStateCheckpoint` (immutable): the value after every change, keyed by
-  transaction hash and log index.
+### Snapshot and flow dates
 
-History is not pruned (`indexerHints.prune: never`), so time-travel queries work
-for any block after the Vault deployment.
+`ChainDay` evaluates balances and Vault accrual **exactly at 00:00 UTC**, before
+events at that timestamp. Deployment-day midnight has zero supply. Each handler
+calls `closeDaysUpTo` before applying its event; Clock polls close quiet days.
 
-## Queries
+`observedBlockNumber` / `observedBlockTimestamp` identify the last event or poll
+before closure, not the final canonical block before midnight. They are zero
+before deployment. Snapshot consumers retain this observed-block meaning and
+the requested midnight `date`. The legacy `/api/snapshot` instead reads the
+first block at or after midnight, explaining small parity differences.
 
-Latest value together with the block it is valid at:
+| VaultDay field                                                 | Meaning                                                                    | Dune equivalent |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------- | --------------- |
+| `date`, `timestamp`                                            | Midnight snapshot boundary                                                 | —               |
+| `totalAssets`, `treasuryAssets`                                | Accrued assets at midnight                                                 | —               |
+| `shareSupply`, `sharePrice`, `apr`, `stakers`, `unstakeLocked` | Midnight staking metrics                                                   | —               |
+| `flowDate`                                                     | Previous UTC day; flows cover `[flowDate 00:00, date 00:00)`               | `day`           |
+| `settlementTotalAssets`                                        | Last `RewardsSettled.totalAssets` in `flowDate`, null without a settlement | `totalAssets`   |
+| `dailyRewards`                                                 | Sum of `RewardsSettled.rewards` in `flowDate`                              | `dailyRewards`  |
+| `dailyTreasuryRewards`, `treasurySettlementCount`              | Treasury settlement amount and count                                       | —               |
+| `deposits`, `withdrawRequests`, `claims`, `treasuryClaims`     | Event asset sums; deposits include cancelled unstake redeposits            | —               |
+| `depositCount`, `withdrawRequestCount`, `claimCount`           | Corresponding event counts                                                 | —               |
 
-```graphql
-{
-  vaultState(id: "current") { vaultUnstakeLocked updatedAtBlock updatedAtTimestamp }
-  _meta { hasIndexingErrors block { number hash } }
-}
-```
+`ClaimDay` uses the same `date` / `flowDate` convention. Vault days begin at the
+first midnight after initialization; claim days begin after the first claim.
+Gap days have zero flows and null `settlementTotalAssets`.
 
-Value at a historical block:
+### Circulation
 
-```graphql
-{ vaultState(id: "current", block: { number: 25390163 }) { vaultUnstakeLocked } }
-```
+Each chain stores `totalSupply`, the balances below, and `circulation`.
+Ethereum also exposes `vaultTotalAssets`, `vaultTreasuryAssets`,
+`vaultUnstakeLocked` and `vaultReward`.
 
-## Deployment
+| Component                | Address                                      | Chains   |
+| ------------------------ | -------------------------------------------- | -------- |
+| `reward`                 | `0x4731bc41b3cca4c2883b8ebb68cb546d5b3b4dd6` | Both     |
+| `phalaChainBridge`       | `0xcd38b15a419491c7c1238b0659f65c755792e257` | Both     |
+| `khalaLegacyChainBridge` | `0x6ed3bc069cf4f87de05c04c352e8356492ec6efe` | Both     |
+| `khalaChainBridge`       | `0xeec0fb4913119567cdfc0c5fc2bf8f9f9b226c2d` | Both     |
+| `sygmaBridge`            | `0xc832588193cd5ed2185dada4a531e0b26ec5b830` | Both     |
+| `portalBridge`           | `0x3ee18b2214aff97000d974cf647e7c347e8fa585` | Both     |
+| `sunsetReward`           | `0x4a396b5c9a6fbc1bc0525f24ac0a246766f3ebef` | Ethereum |
+| `vaultBalance`           | `0x21d6ec8fc14caacc55afa23cba66798dab3a0ec0` | Ethereum |
 
-Deployed in the Phala Goldsky project (`project_cmdgxxcewrqdi01wx9e7md0ek`) as
-`phala-vault-state/1.0.0`, tagged `prod`. Consumers use the tag endpoint:
+S contains these addresses plus `0x0000000000000000000000000000000000000000`
+for mint/burn supply accounting. Two data sources filter `topic1 ∈ S` and
+`topic2 ∈ S`; each updates its own side, while the From handler stores the audit
+row when both match. Filtered Transfers also support per-bridge flow queries.
 
 ```text
-https://api.goldsky.com/api/public/project_cmdgxxcewrqdi01wx9e7md0ek/subgraphs/phala-vault-state/prod/gn
+khalaBridge = khalaLegacyChainBridge + khalaChainBridge
+vaultReward = vaultBalance - vaultTotalAssets - vaultTreasuryAssets - vaultUnstakeLocked
+ethereumCirculation = totalSupply - reward - sunsetReward - phalaChainBridge
+                      - khalaBridge - sygmaBridge - portalBridge - vaultReward
+baseCirculation = totalSupply - reward - phalaChainBridge - khalaBridge
+                  - sygmaBridge - portalBridge
 ```
 
-## Build and deploy
+`vaultReward` may be negative when promised rewards exceed funding. Historical
+Substrate Phala/Khala circulation remains a frozen archive; Phala L2 vPHA is
+outside this formula.
+
+### Vault accrual and upgrades
+
+Every Vault event declares reads of the seven accrual getters. The
+[verified implementation](https://sourcify.dev/server/v2/contract/1/0xC0b39989381D8C88b7ef82A80d4C90540E70862A?fields=all)
+uses basis points and floors the treasury share first:
+
+```text
+rewards = paused || shareSupply == 0 ? 0 : rewardRate * (T - checkpointTime)
+treasuryRewards = floor(rewards * treasuryRatio / 10000)
+totalAssets(T) = checkpointTotalAssets + rewards - treasuryRewards
+treasuryAssets(T) = checkpointTreasuryAssets + treasuryRewards
+APR = rewardRate * (1 - treasuryRatio / 10000) * 31536000 / totalAssets
+```
+
+`Withdraw` increases locked PHA; `Claimed` decreases it. `Deposit` decreases it
+only when `sender == Vault`. `TreasurySettled` and `TreasuryAssetsClaimed` are
+separate flows. Contract reads are end-of-block values; locked assets and Holder
+balances follow log order.
+
+`vaultImplementation`, `vaultImplementationReviewed` and `accrualMode` appear
+on `Latest`, `ChainDay` and `VaultDay` (`VaultState` names the address
+`implementation`). The reviewed implementation is
+`0xC0b39989381D8C88b7ef82A80d4C90540E70862A`.
+
+Unknown implementations set `vaultImplementationReviewed=false` and
+`accrualMode="checkpoint-only"`: assets use checkpoint values, APR is zero,
+and token/claimer indexing continues. Missing getters retain the last complete
+checkpoint. Future checkpoint times or treasury ratios above 10000 trigger the
+same fallback, including logs before `Upgraded` that read the new end-of-block
+getters. Before Vault deployment and on Base, the implementation is zero,
+reviewed is true, and mode is `inactive`.
+
+Consumers should treat an unreviewed implementation as unhealthy;
+pha-circulation-server returns 503 for circulation. The parity runner rejects
+promotion while the flag is false.
+
+For an upgrade, review the verified ABI and formula, update the ABI and
+implementation allowlist/formula dispatch, deploy a new version, verify features
+and parity, then move `prod`. Changing a consumer flag does not validate accrual.
+
+## Development
+
+Use Bun **1.4.2** and Node.js **20.18.1+**. Dependencies are exact pins in the
+text `bun.lock`.
 
 ```bash
-bun install
-bun run build
-goldsky login   # API key of the Phala Goldsky project
-goldsky subgraph deploy phala-vault-state/<version> --path .
+bun install --frozen-lockfile
+bun run codegen       # both manifests, Ethereum first for Vault bindings
+bun run build         # build/ethereum and build/base
+bun run test          # matchstick 0.6.0
+bun run test:verify   # offline parity fixtures
+bun run typecheck     # parity scripts; mappings compile during build
+bun run check         # Biome CI
 ```
 
-Deploy changes as a new version (for example `1.0.1`). Once it is synced with
-`hasIndexingErrors: false` and matches the current version, move the tag with
-`goldsky subgraph tag create phala-vault-state/<version> --tag prod` and
-delete the old version. Consumers keep using the `prod` endpoint.
+Matchstick's Linux binary needs `libpq.so.5` (`libpq5` on Ubuntu 22/24); CI
+installs it in the runner. Docker is also supported:
+`bunx --no-install graph test -d -v 0.6.0`. Biome formats AssemblyScript while
+leaving its lint/import checks to the mapping compiler.
 
-The project runs on Goldsky's free allowance of 2,250 subgraph worker hours
-per month, which fits exactly three always-on subgraphs (this one plus
-`phala-claimer` and `khala-claimer`, used by the Phala App). Keep a fourth
-version running only while it syncs, and delete the old one right after
-moving the tag.
+## Deploy, tag and rollback
 
-## Independent replay
+Use Goldsky's **Scale free allowance**: **2,250 worker-hours/month**, **~100K
+entities**, and **at most three active subgraphs team-wide**, including temporary
+versions. Goldsky also caps **deployed subgraphs at three**, including paused
+versions. Check storage after sync. Starter has a one-time credit and can pause
+services when exhausted.
 
-`scripts/replay.ts` rebuilds the value directly from Ethereum logs, without any
-indexer. Use it to verify a deployment or as a recovery path:
+1. Export both legacy claimers' complete entity sets and `_meta` at their paused
+   blocks before deleting either. Paused subgraphs still occupy deployment slots
+   and serve stale GraphQL data. Keep pauses to **days**: an extended pause risks
+   permanent deletion. Keep `phala-vault-state` active until the circulation
+   server cutover is verified.
+2. If all three slots are occupied, delete the least-active exported claimer to
+   free a slot. Its claim-log details are unavailable until apps switch; claim
+   eligibility remains on-chain. Deploy a temporary feature test, verify topic
+   filters, declared calls and Clock polling, then **delete it immediately**. Observe
+   `_meta.hasIndexingErrors=false`, Vault checkpoints and `Latest.timestamp`
+   advancing through a quiet polling interval. Keep test start blocks and
+   accumulator dates consistent; this is not a historical parity candidate.
+3. Deploy full Ethereum history without a graft. Goldsky uses the compiled
+   directory's `subgraph.yaml`:
+
+   ```bash
+   bun run codegen
+   bun run build
+   goldsky subgraph deploy phala-ethereum/1.0.0 --path build/ethereum
+   ```
+
+4. Wait for full sync, run `--chains ethereum` parity with the claimer exports,
+   then tag Ethereum and switch apps. Vault checkpoints use active vault-state;
+   claimers compare at each export's block.
+
+   ```bash
+   goldsky subgraph tag create phala-ethereum/1.0.0 --tag prod
+   ```
+
+5. After the apps cutover is verified, delete the remaining legacy claimer and
+   deploy Base: `goldsky subgraph deploy phala-base/1.0.0 --path build/base`.
+   Wait for sync, run `--chains base` parity, then tag it:
+   `goldsky subgraph tag create phala-base/1.0.0 --tag prod`.
+6. Finish gate 1 for both chains **before switching `/api/snapshot`**, always
+   with `--snapshot-cache`. Delete legacy vault-state only after the circulation
+   server cutover is verified.
+
+Before deletion, rollback resumes the old subgraph and reverts its consumer.
+After deletion, rollback requires a free deployment slot, redeploying and
+resyncing the old version; pausing a replacement does not free a slot.
+
+For subsequent upgrades, use the spare third slot for one replacement at a time:
+deploy, verify, move its tag, delete its old version, then update the other chain.
+`prune: auto` retains immutable daily/event history and prunes old mutable
+versions; verification filters immutable rows by reference block instead of
+querying historical mutable state. CI does not deploy or move tags.
+
+## Parity verification
+
+The runner exits nonzero on failure and writes a JSON report. Inputs come from
+arguments/environment; it does not load secret files. Set `GOLDSKY_ETHEREUM_URL`
+and `GOLDSKY_BASE_URL` to synced version endpoints, `SNAPSHOTS_NDJSON` to the
+1,825-row snapshot archive, and `DUNE_RESULTS_JSON` to the Dune `results.json`.
 
 ```bash
-RPC_URL=https://... bun run replay 25390163
+mkdir -p /tmp/phala-parity
+bun run verify --prefetch-snapshots --snapshot-cache /tmp/phala-parity/snapshots.ndjson \
+  --output /tmp/phala-parity/prefetch.json
+bun run verify --stage subgraphs --chains ethereum \
+  --old-khala-export "$KHALA_EXPORT" --old-phala-export "$PHALA_EXPORT" \
+  --snapshot-cache /tmp/phala-parity/snapshots.ndjson --output /tmp/phala-parity/ethereum.json
+bun run verify --stage subgraphs --chains base \
+  --snapshot-cache /tmp/phala-parity/snapshots.ndjson --output /tmp/phala-parity/base.json
+bun run verify --stage subgraphs --snapshot-cache /tmp/phala-parity/snapshots.ndjson \
+  --old-khala-export "$KHALA_EXPORT" --old-phala-export "$PHALA_EXPORT" \
+  --output /tmp/phala-parity/subgraphs.json
+bun run verify --stage server --preview "$SERVER_PREVIEW_URL" \
+  --output /tmp/phala-parity/server.json
+bun run verify --stage cache --d1-json "$D1_EXPORT_JSON" \
+  --output /tmp/phala-parity/cache.json
 ```
 
-It fetches `eth_getLogs` in `CHUNK_SIZE` block ranges (default `10000`) with
-`CONCURRENCY` parallel requests (default `4`), halving any range the provider
-rejects as too wide. Against Goldsky Edge RPC it reproduces the legacy value at
-block `25390163` from 1456 events in about 90 seconds.
+Always preserve the snapshot cache from **before the circulation API cutover**;
+otherwise the reference could read the same new data. Cached reads resume the
+sequential old-API scan, which can take hours; requests are paced to four/second.
+`--prefetch-snapshots` only fills missing dates from 2020-04-30 through UTC
+yesterday; it needs no subgraph endpoints or archives and runs no gates.
+
+`--chains ethereum` or `--chains base` requires only that chain's endpoint and
+reports the other chain as pending (`partial-pass`). Archive totals combine the
+selected new chain with the other chain's old cached API circulation and frozen
+Substrate totals; Base contributes zero before deployment. Gates 4–6 are pending
+in a Base-only run. Full runs default to both chains; `server`, `cache` and `all`
+require both.
+
+Claimer exports use `{subgraph, block, meta, claimeds?, claimedAndBridgeds?}`;
+`meta` is the saved `_meta`. Khala requires `claimeds`; Phala requires both arrays
+and an empty `claimeds`. Each comparison uses its own export's `block`, so no
+live old endpoint is needed. Without exports, the runner uses live references.
+
+- `subgraphs`, gates 1–2: every date from 2020-04-30, exact exposed snapshot
+  components; first-block differences require audited flows on at most 1% of
+  dates. Vault accrual residual is bounded by `midnight rewardRate * delay + 1e-6 PHA`.
+- Gate 3: 1,825 archived snapshots and 365 History totals, relative tolerance
+  `1e-7`; larger differences need a passing snapshot explanation.
+- Gate 4: exactly 550 Dune settlement days through 2026-10-10, assets/rewards
+  tolerance `1e-12`; event-based settlement/reward/flow residuals must be zero.
+- Gates 5–6: exact legacy Vault checkpoints and complete claimer ID/field sets
+  at each old claimer's last block; the new indexer must reach both. Old Phala
+  `claimeds` stays empty.
+- `server`, gate 7: endpoint keys/types, current circulation tolerance `1e-6`,
+  and 30 snapshot dates equal ChainDay. Source metadata replaces
+  `headBlockNumber`/`lagBlocks` with `indexedAt`/`lagSeconds`.
+- `cache`, gate 8: daily row counts and latest totals within `1e-9`; all 663
+  archived Cloud rows, including `captured`, exact.
+
+The old API merges Ethereum's Khala bridge balances and exposes only supply and
+circulation for Base. The Vault assets+treasury check is derived from old
+`vaultReward` and audited flows. Dune has 550 dated assets but daily rewards only
+for 2026-10-10 (`34930.0634765625` PHA); the report lists the other 549 dates as
+unavailable, not zero. Undated summary rows are excluded.
+
+Optional raw checks use `ARCHIVE_RPC_URL` / `BASE_ARCHIVE_RPC_URL` (or
+`--archive-rpc` / `--base-archive-rpc`): 30 deterministic dates per configured
+chain, including endpoints and prioritizing first-block S transfers. All raw
+balances/supply are checked at observed blocks; Ethereum assets are evaluated
+at the observed block's timestamp. Unconfigured checks report skipped. These
+are verification-only reads through the viem dev dependency.
+
+The cache input is a JSON object containing `circulation_day`, `vault_day`,
+`claim_day` and `cloud_daily` arrays. Preserve `date` / `chain`; normalize metric
+keys to Graph fields, amounts to PHA decimals and counts to integers. Keep Cloud
+`total_users`, `total_vms`, `running_vms`, `total_vcpu`, `captured` verbatim.
+
+`--stage all` requires all inputs. Endpoint/archive overrides are `--ethereum`,
+`--base`, `--ndjson`, `--results`, `--old-api`, `--old-vault`, `--old-khala`,
+`--old-phala`; `--samples N` changes raw sampling. `SERVER_PREVIEW_URL` and
+`D1_EXPORT_JSON` work without flags. Default old references are the public
+circulation API and the legacy Goldsky subgraphs in the same project.

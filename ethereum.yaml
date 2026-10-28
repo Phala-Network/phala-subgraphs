@@ -1,0 +1,316 @@
+specVersion: 1.2.0
+description: Phala ethereum circulation, midnight history and analytics
+repository: https://github.com/Phala-Network/phala-vault-state-subgraph
+schema:
+  file: ./schema.graphql
+indexerHints:
+  prune: auto
+dataSources:
+  - kind: ethereum
+    name: TokenFrom
+    network: mainnet
+    source:
+      address: "0x6c5ba91642f10282b576d91922ae6448c9d52f4e"
+      abi: Token
+      startBlock: 9975568
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities: [ChainState, ChainDay, Latest, Transfer]
+      abis:
+        - name: Token
+          file: ./abis/Token.json
+      eventHandlers:
+        - event: Transfer(indexed address,indexed address,uint256)
+          handler: handleFrom
+          topic1:
+            [
+              "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "0x0000000000000000000000004731bc41b3cca4c2883b8ebb68cb546d5b3b4dd6",
+              "0x000000000000000000000000cd38b15a419491c7c1238b0659f65c755792e257",
+              "0x0000000000000000000000006ed3bc069cf4f87de05c04c352e8356492ec6efe",
+              "0x000000000000000000000000eec0fb4913119567cdfc0c5fc2bf8f9f9b226c2d",
+              "0x000000000000000000000000c832588193cd5ed2185dada4a531e0b26ec5b830",
+              "0x0000000000000000000000003ee18b2214aff97000d974cf647e7c347e8fa585",
+              "0x0000000000000000000000004a396b5c9a6fbc1bc0525f24ac0a246766f3ebef",
+              "0x00000000000000000000000021d6ec8fc14caacc55afa23cba66798dab3a0ec0",
+            ]
+      file: ./src/token.ts
+  - kind: ethereum
+    name: TokenTo
+    network: mainnet
+    source:
+      address: "0x6c5ba91642f10282b576d91922ae6448c9d52f4e"
+      abi: Token
+      startBlock: 9975568
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities: [ChainState, ChainDay, Latest, Transfer]
+      abis:
+        - name: Token
+          file: ./abis/Token.json
+      eventHandlers:
+        - event: Transfer(indexed address,indexed address,uint256)
+          handler: handleTo
+          topic2:
+            [
+              "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "0x0000000000000000000000004731bc41b3cca4c2883b8ebb68cb546d5b3b4dd6",
+              "0x000000000000000000000000cd38b15a419491c7c1238b0659f65c755792e257",
+              "0x0000000000000000000000006ed3bc069cf4f87de05c04c352e8356492ec6efe",
+              "0x000000000000000000000000eec0fb4913119567cdfc0c5fc2bf8f9f9b226c2d",
+              "0x000000000000000000000000c832588193cd5ed2185dada4a531e0b26ec5b830",
+              "0x0000000000000000000000003ee18b2214aff97000d974cf647e7c347e8fa585",
+              "0x0000000000000000000000004a396b5c9a6fbc1bc0525f24ac0a246766f3ebef",
+              "0x00000000000000000000000021d6ec8fc14caacc55afa23cba66798dab3a0ec0",
+            ]
+      file: ./src/token.ts
+  - kind: ethereum
+    name: Vault
+    network: mainnet
+    source:
+      address: "0x21d6ec8fc14caacc55afa23cba66798dab3a0ec0"
+      abi: Vault
+      startBlock: 21596326
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities: [VaultState, VaultDay, VaultEvent, Holder, Latest, ChainDay]
+      abis:
+        - name: Vault
+          file: ./abis/Vault.json
+      eventHandlers:
+        - event: Approval(indexed address,indexed address,uint256)
+          handler: handleApproval
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: Claimed(indexed address,indexed address,indexed address,uint256)
+          handler: handleClaimed
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: Deposit(indexed address,indexed address,uint256,uint256)
+          handler: handleDeposit
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: Initialized(uint64)
+          handler: handleInitialized
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: MaxUnlockRequestsUpdated(uint256,uint256)
+          handler: handleMaxUnlockRequestsUpdated
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: OwnershipTransferred(indexed address,indexed address)
+          handler: handleOwnershipTransferred
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: Paused(address)
+          handler: handlePaused
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: RewardRateUpdated(uint256,uint256)
+          handler: handleRewardRateUpdated
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: RewardsSettled(uint256,uint256,uint256)
+          handler: handleRewardsSettled
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: Transfer(indexed address,indexed address,uint256)
+          handler: handleShareTransfer
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: TreasuryAssetsClaimed(indexed address,uint256)
+          handler: handleTreasuryAssetsClaimed
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: TreasuryRatioUpdated(uint256,uint256)
+          handler: handleTreasuryRatioUpdated
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: TreasurySettled(uint256,uint256,uint256)
+          handler: handleTreasurySettled
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: UnlockPeriodUpdated(uint256,uint256)
+          handler: handleUnlockPeriodUpdated
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: Unpaused(address)
+          handler: handleUnpaused
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: Withdraw(indexed address,indexed address,indexed address,uint256,uint256)
+          handler: handleWithdraw
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+        - event: Upgraded(indexed address)
+          handler: handleUpgraded
+          calls:
+            checkpointTime: Vault[event.address].checkpointTime()
+            checkpointTotalAssets: Vault[event.address].checkpointTotalAssets()
+            checkpointTreasuryAssets: Vault[event.address].checkpointTreasuryAssets()
+            rewardRate: Vault[event.address].rewardRate()
+            treasuryRatio: Vault[event.address].treasuryRatio()
+            paused: Vault[event.address].paused()
+            totalSupply: Vault[event.address].totalSupply()
+      file: ./src/vault.ts
+  - kind: ethereum
+    name: KhalaClaimer
+    network: mainnet
+    source:
+      address: "0xa139f849000c5438855032ebfeed9ee104023a73"
+      abi: KhalaClaimer
+      startBlock: 21596400
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities: [Claimed, ClaimedAndBridged, ClaimDay, ChainState]
+      abis:
+        - name: KhalaClaimer
+          file: ./abis/KhalaClaimer.json
+      eventHandlers:
+        - event: Claimed(indexed address,uint256,uint256,address)
+          handler: handleKhalaClaimer
+      file: ./src/claimer.ts
+  - kind: ethereum
+    name: PhalaClaimer
+    network: mainnet
+    source:
+      address: "0x8b6d7ab0be8d1f6ae40738c4cff75134110a777f"
+      abi: PhalaClaimer
+      startBlock: 21596400
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities: [Claimed, ClaimedAndBridged, ClaimDay, ChainState]
+      abis:
+        - name: PhalaClaimer
+          file: ./abis/PhalaClaimer.json
+      eventHandlers:
+        - event: ClaimedAndBridged(indexed address,uint256,uint256,address,address)
+          handler: handlePhalaClaimer
+      file: ./src/claimer.ts
+  - kind: ethereum
+    name: Clock
+    network: mainnet
+    source:
+      address: "0x6c5ba91642f10282b576d91922ae6448c9d52f4e"
+      abi: Token
+      startBlock: 26283000
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities: [ChainState, ChainDay, VaultDay, ClaimDay, Latest]
+      abis:
+        - name: Token
+          file: ./abis/Token.json
+      blockHandlers:
+        - handler: handleBlock
+          filter:
+            kind: polling
+            every: 25
+      file: ./src/clock.ts

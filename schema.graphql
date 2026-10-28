@@ -1,24 +1,223 @@
-"""
-PHA locked in the Vault by pending unstake requests, reconstructed from Vault
-events. Singleton with id "current".
-"""
-type VaultState @entity(immutable: false) {
+"All token quantities are integer wei (18 decimals), unless stated otherwise."
+type ChainState @entity(immutable: false) {
   id: ID!
-  vaultUnstakeLocked: BigInt!
-  updatedAtBlock: BigInt!
-  updatedAtTimestamp: BigInt!
+  chain: String!
+  nextDay: BigInt!
+  observedBlockNumber: BigInt!
+  observedBlockTimestamp: BigInt!
+  claimsStarted: Boolean!
+  totalSupply: BigInt!
+  reward: BigInt!
+  sunsetReward: BigInt!
+  phalaChainBridge: BigInt!
+  khalaLegacyChainBridge: BigInt!
+  khalaChainBridge: BigInt!
+  sygmaBridge: BigInt!
+  portalBridge: BigInt!
+  vaultBalance: BigInt!
+  khalaClaimCount: BigInt!
+  khalaFree: BigInt!
+  khalaStaked: BigInt!
+  phalaClaimCount: BigInt!
+  phalaFree: BigInt!
+  phalaStaked: BigInt!
 }
 
-"""
-Value of vaultUnstakeLocked after each event that changed it, for
-deterministic historical lookups.
-"""
-type VaultStateCheckpoint @entity(immutable: true) {
-  id: Bytes!
+"State evaluated at date 00:00 UTC, before any events at that timestamp."
+type ChainDay @entity(immutable: true) {
+  id: ID!
+  chain: String!
+  date: String!
+  timestamp: BigInt!
+  observedBlockNumber: BigInt!
+  observedBlockTimestamp: BigInt!
+  totalSupply: BigInt!
+  reward: BigInt!
+  sunsetReward: BigInt!
+  phalaChainBridge: BigInt!
+  khalaLegacyChainBridge: BigInt!
+  khalaChainBridge: BigInt!
+  sygmaBridge: BigInt!
+  portalBridge: BigInt!
+  vaultBalance: BigInt!
+  vaultTotalAssets: BigInt!
+  vaultTreasuryAssets: BigInt!
   vaultUnstakeLocked: BigInt!
-  delta: BigInt!
+  vaultReward: BigInt!
+  circulation: BigInt!
+  vaultImplementation: Bytes!
+  vaultImplementationReviewed: Boolean!
+  accrualMode: String!
+}
+
+"Current state at the last handled event or Clock poll; singleton current."
+type Latest @entity(immutable: false) {
+  id: ID!
+  chain: String!
+  timestamp: BigInt!
+  observedBlockNumber: BigInt!
+  observedBlockTimestamp: BigInt!
+  totalSupply: BigInt!
+  reward: BigInt!
+  sunsetReward: BigInt!
+  phalaChainBridge: BigInt!
+  khalaLegacyChainBridge: BigInt!
+  khalaChainBridge: BigInt!
+  sygmaBridge: BigInt!
+  portalBridge: BigInt!
+  vaultBalance: BigInt!
+  vaultTotalAssets: BigInt!
+  vaultTreasuryAssets: BigInt!
+  vaultUnstakeLocked: BigInt!
+  vaultReward: BigInt!
+  circulation: BigInt!
+  shareSupply: BigInt!
+  sharePrice: BigDecimal!
+  apr: BigDecimal!
+  stakers: BigInt!
+  vaultImplementation: Bytes!
+  vaultImplementationReviewed: Boolean!
+  accrualMode: String!
+}
+
+"Only PHA transfers touching S. Each log is stored once, even S to S."
+type Transfer @entity(immutable: true) {
+  id: Bytes!
+  from: Bytes!
+  to: Bytes!
+  amount: BigInt!
   blockNumber: BigInt!
-  blockTimestamp: BigInt!
+  timestamp: BigInt!
   transactionHash: Bytes!
   logIndex: BigInt!
+}
+
+type VaultState @entity(immutable: false) {
+  id: ID!
+  implementation: Bytes!
+  checkpointTime: BigInt!
+  checkpointTotalAssets: BigInt!
+  checkpointTreasuryAssets: BigInt!
+  rewardRate: BigInt!
+  treasuryRatio: BigInt!
+  paused: Boolean!
+  shareSupply: BigInt!
+  stakers: BigInt!
+  unstakeLocked: BigInt!
+  dailyRewards: BigInt!
+  dailyTreasuryRewards: BigInt!
+  deposits: BigInt!
+  withdrawRequests: BigInt!
+  claims: BigInt!
+  treasuryClaims: BigInt!
+  depositCount: BigInt!
+  withdrawRequestCount: BigInt!
+  claimCount: BigInt!
+  treasurySettlementCount: BigInt!
+  settlementTotalAssets: BigInt
+  vaultImplementationReviewed: Boolean!
+  accrualMode: String!
+}
+
+"Midnight metrics; flows belong to the preceding UTC calendar day flowDate."
+type VaultDay @entity(immutable: true) {
+  id: ID!
+  date: String!
+  flowDate: String!
+  timestamp: BigInt!
+  observedBlockNumber: BigInt!
+  observedBlockTimestamp: BigInt!
+  totalAssets: BigInt!
+  treasuryAssets: BigInt!
+  shareSupply: BigInt!
+  sharePrice: BigDecimal!
+  apr: BigDecimal!
+  stakers: BigInt!
+  unstakeLocked: BigInt!
+  rewardRate: BigInt!
+  treasuryRatio: BigInt!
+  paused: Boolean!
+  dailyRewards: BigInt!
+  dailyTreasuryRewards: BigInt!
+  deposits: BigInt!
+  withdrawRequests: BigInt!
+  claims: BigInt!
+  treasuryClaims: BigInt!
+  depositCount: BigInt!
+  withdrawRequestCount: BigInt!
+  claimCount: BigInt!
+  treasurySettlementCount: BigInt!
+  settlementTotalAssets: BigInt
+  vaultImplementation: Bytes!
+  vaultImplementationReviewed: Boolean!
+  accrualMode: String!
+}
+
+"Immutable vault flow/administration audit log; locked amount is event-ordered."
+type VaultEvent @entity(immutable: true) {
+  settlementAssets: BigInt
+  id: Bytes!
+  kind: String!
+  assets: BigInt!
+  shares: BigInt!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+  transactionHash: Bytes!
+  logIndex: BigInt!
+  unstakeLockedAfter: BigInt!
+  checkpointTime: BigInt!
+  checkpointTotalAssets: BigInt!
+  checkpointTreasuryAssets: BigInt!
+  rewardRate: BigInt!
+  treasuryRatio: BigInt!
+  shareSupply: BigInt!
+  paused: Boolean!
+  implementation: Bytes!
+  vaultImplementationReviewed: Boolean!
+  accrualMode: String!
+}
+
+type Holder @entity(immutable: false) {
+  id: Bytes!
+  shares: BigInt!
+}
+
+"Exact legacy Goldsky no-code shape, including nullable event parameters."
+type Claimed @entity(immutable: true) {
+  id: ID!
+  block_number: BigInt!
+  timestamp_: BigInt!
+  transactionHash_: String!
+  contractId_: String!
+  user: String
+  free: BigInt
+  staked: BigInt
+  receiver: String
+}
+
+"Exact legacy Goldsky no-code shape, including nullable event parameters."
+type ClaimedAndBridged @entity(immutable: true) {
+  id: ID!
+  block_number: BigInt!
+  timestamp_: BigInt!
+  transactionHash_: String!
+  contractId_: String!
+  user: String
+  free: BigInt
+  staked: BigInt
+  l1Receiver: String
+  l2Receiver: String
+}
+
+type ClaimDay @entity(immutable: true) {
+  id: ID!
+  date: String!
+  flowDate: String!
+  timestamp: BigInt!
+  khalaClaimCount: BigInt!
+  khalaFree: BigInt!
+  khalaStaked: BigInt!
+  phalaClaimCount: BigInt!
+  phalaFree: BigInt!
+  phalaStaked: BigInt!
 }
