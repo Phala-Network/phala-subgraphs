@@ -168,44 +168,45 @@ leaving its lint/import checks to the mapping compiler.
 
 ## Deploy, tag and rollback
 
-Use Goldsky's **Scale free allowance**: **2,250 worker-hours/month**, **~100K
-entities**, and **at most three active subgraphs team-wide**, including temporary
-versions. Goldsky also caps **deployed subgraphs at three**, including paused
-versions. Check storage after sync. Starter has a one-time credit and can pause
-services when exhausted.
+The only deployed subgraph is `phala-ethereum/1.1.0`, tagged `prod`.
+`phala-vault-state`, `khala-claimer` and `phala-claimer` have been deleted;
+their data is indexed by `phala-ethereum`.
 
-The current deployments are `phala-ethereum/1.0.0` (tagged `prod`) and
-`phala-vault-state`. Deploy the circulation change alongside them in the third
-slot, without a graft: immutable historical circulation must be recomputed.
+The project is on Starter, whose one-time credit can run out and pause
+services; check remaining credits in the dashboard. Scale's free allowance is
+**2,250 worker-hours/month** and **~100K entities**, team-wide. Goldsky caps
+**deployed subgraphs at three**, including paused versions. Check deployment
+slots before an upgrade and storage after sync. Pausing does not free a slot.
 
-1. Build and deploy the new version:
+1. Set `SUBGRAPH_VERSION` to the new version, then build and deploy it alongside
+   the current version, leaving `prod` unchanged:
 
    ```bash
    bun install --frozen-lockfile
    bun run codegen
    bun run build
-   goldsky subgraph deploy phala-ethereum/1.1.0 --path build/ethereum
+   goldsky subgraph deploy "phala-ethereum/$SUBGRAPH_VERSION" --path build/ethereum
    ```
 
 2. Wait for full sync and no indexing errors. Verify Clock polling advances
-   `Latest.timestamp`, then run all subgraph parity gates against the **1.1.0
-   version endpoint**, the preserved old snapshot cache, and claimer exports.
-   Keep `phala-vault-state` active for checkpoint parity and the old server.
+   `Latest.timestamp`, then run the applicable [parity gates](#parity-verification)
+   against the new version endpoint and preserved independent references.
+   Historical mapping changes require recomputing the affected history rather
+   than grafting it from the previous version.
 3. After parity passes, move `prod`:
 
    ```bash
-   goldsky subgraph tag create phala-ethereum/1.1.0 --tag prod
+   goldsky subgraph tag create "phala-ethereum/$SUBGRAPH_VERSION" --tag prod
    ```
 
-4. Verify consumers on `prod`, then delete `phala-ethereum/1.0.0` to free the
-   third slot. Delete `phala-vault-state` only after the circulation server
-   cutover is verified. Pausing a version never frees a deployment slot.
+4. Verify the circulation API, analytics dashboard and apps claim logs on
+   `prod`, then delete the superseded version to free its deployment slot.
 
-Before deleting 1.0.0, rollback moves `prod` back and restores the consumer's
-previous circulation definition. After deletion, rollback requires a free slot,
-redeploying and resyncing the old version. Future upgrades follow the same
-sequence: deploy alongside the current version, verify, move `prod`, delete the
-old version. CI does not deploy or move tags.
+Before deleting the previous version, rollback moves `prod` back; restore the
+matching consumer version if its circulation definition changed. After
+deletion, rollback requires a free slot, redeployment and a full sync.
+CI does not deploy or move tags. Repository metadata changes do not require
+a subgraph redeploy.
 
 `prune: auto` retains immutable daily/event history and prunes old mutable
 versions; verification filters immutable rows by reference block instead of
@@ -217,6 +218,12 @@ The runner exits nonzero on failure and writes a JSON report. Inputs come from
 arguments/environment; it does not load secret files. Set `GOLDSKY_ETHEREUM_URL`
 to the synced version endpoint, `SNAPSHOTS_NDJSON` to the
 1,825-row snapshot archive, and `DUNE_RESULTS_JSON` to the Dune `results.json`.
+
+The `subgraphs` and `all` stages include legacy migration gates. Gate 5 still
+requires a reachable legacy Vault endpoint via `--old-vault`; its default
+`phala-vault-state/prod` deployment is deleted. The runner has no offline Vault
+checkpoint input, so these stages cannot complete without a compatible
+reference endpoint. The `server` and `cache` stages do not require it.
 
 ```bash
 mkdir -p /tmp/phala-parity
