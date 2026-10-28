@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "codegen": "graph codegen ethereum.yaml && graph codegen base.yaml",
-    "build": "graph build ethereum.yaml --output-dir build/ethereum && graph build base.yaml --output-dir build/base",
+    "codegen": "graph codegen ethereum.yaml",
+    "build": "graph build ethereum.yaml --output-dir build/ethereum",
     "test": "graph test -v 0.6.0",
     "test:verify": "bun test scripts",
     "verify": "bun scripts/verify.ts",

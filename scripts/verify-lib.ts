@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
 
 export type Row = Record<string, unknown>;
-export const CHAINS = ["ethereum", "base"] as const;
-export type Chain = (typeof CHAINS)[number];
-export const START_DATES: Record<Chain, string> = {
-  ethereum: "2020-04-30",
-  base: "2024-04-05",
-};
+export const START_DATE = "2020-04-30";
 export const CLAIM_FIELDS =
   "id block_number timestamp_ transactionHash_ contractId_ user free staked";
 export const WAD = 10n ** 18n;
@@ -74,46 +69,16 @@ export const dated = (values: Row[], field = "date"): Map<string, Row> => {
   }
   return map;
 };
-export function selectedChains(value: string): Chain[] {
-  const selected = value.split(",");
-  assert.ok(
-    selected.length > 0 &&
-      selected.every((chain) => CHAINS.some((known) => known === chain)) &&
-      new Set(selected).size === selected.length,
-    "--chains must be ethereum, base, or ethereum,base",
-  );
-  return CHAINS.filter((chain) => selected.includes(chain));
-}
 export function snapshotDates(now = Date.now()): string[] {
   const dates: string[] = [];
   const today = new Date(now).toISOString().slice(0, 10);
   for (
-    let timestamp = Date.parse(START_DATES.ethereum);
+    let timestamp = Date.parse(START_DATE);
     timestamp < Date.parse(today);
     timestamp += 86400000
   )
     dates.push(new Date(timestamp).toISOString().slice(0, 10));
   return dates;
-}
-export function circulationTotal(
-  date: string,
-  chains: Chain[],
-  days: Partial<Record<Chain, Row>>,
-  old: Row | undefined,
-): number {
-  let total = 0;
-  for (const chain of CHAINS) {
-    if (date < START_DATES[chain]) continue;
-    if (chains.includes(chain)) {
-      const day = days[chain];
-      assert.ok(day, `Archive ${chain} date missing ${date}`);
-      total += pha(day.circulation);
-    } else {
-      assert.ok(old, `Missing old snapshot for hybrid total ${date}`);
-      total += finite(record(old[chain]).circulation);
-    }
-  }
-  return total;
 }
 export function claimerExport(value: unknown, chain: "khala" | "phala") {
   const data = record(value);
@@ -234,6 +199,7 @@ export interface SnapshotComparison {
   transferExplained: boolean;
   accrualDelta: bigint;
   bound: bigint;
+  circulationBound: bigint;
 }
 export function compareSnapshot(
   day: Row,
@@ -243,18 +209,15 @@ export function compareSnapshot(
   vault: Row | undefined,
 ): SnapshotComparison {
   let transferExplained = false;
-  const components =
-    day.chain === "base"
-      ? ["totalSupply"]
-      : [
-          "totalSupply",
-          "reward",
-          "sunsetReward",
-          "phalaChainBridge",
-          "khalaChainBridge",
-          "sygmaBridge",
-          "portalBridge",
-        ];
+  const components = [
+    "totalSupply",
+    "reward",
+    "sunsetReward",
+    "phalaChainBridge",
+    "khalaChainBridge",
+    "sygmaBridge",
+    "portalBridge",
+  ];
   for (const component of components) {
     const actual =
       component === "khalaChainBridge"
@@ -270,74 +233,120 @@ export function compareSnapshot(
     transferExplained ||= difference !== 0n;
   }
   const flow = vaultFlow(events);
-  let accrualDelta = 0n;
-  let bound = 0n;
-  let vaultDifference = 0n;
-  if (day.chain === "ethereum") {
-    const ordered = [...events].sort((a, b) =>
-      Number(integer(a.logIndex) - integer(b.logIndex)),
-    );
-    const last = ordered.at(-1);
-    const lockedDelta = last
-      ? integer(last.unstakeLockedAfter) - integer(day.vaultUnstakeLocked)
-      : 0n;
-    assert.equal(
-      wei(old.vaultUnstakeLocked) - integer(day.vaultUnstakeLocked),
-      lockedDelta,
-      `${day.date}: locked assets differ`,
-    );
-    transferExplained ||= lockedDelta !== 0n;
-    vaultDifference = wei(old.vaultReward) - integer(day.vaultReward);
-    const balanceDelta = transferDelta(transfers, "vaultBalance");
-    transferExplained ||= balanceDelta !== 0n;
-    accrualDelta = vaultDifference - balanceDelta + flow.assets + lockedDelta;
-    const midnight = BigInt(
-      Date.parse(`${utcDate(day.date)}T00:00:00Z`) / 1000,
-    );
-    const oldTimestamp = BigInt(Date.parse(text(old.timestamp)) / 1000);
-    assert.ok(oldTimestamp >= midnight, "Old snapshot precedes midnight");
-    bound =
-      (vault ? integer(vault.rewardRate) : 0n) * (oldTimestamp - midnight) +
-      10n ** 12n;
-    assert.ok(
-      abs(accrualDelta) <= bound,
-      `${day.date}: vault accrual exceeds rate*time + 1e-6 PHA`,
-    );
-    // Assets+treasury is derived from old vaultReward; independent raw values
-    // are checked separately in optional archive-RPC mode.
-    const derivedOldSum =
-      integer(day.vaultBalance) +
-      balanceDelta -
-      wei(old.vaultUnstakeLocked) -
-      wei(old.vaultReward);
-    const newSum =
-      integer(day.vaultTotalAssets) + integer(day.vaultTreasuryAssets);
-    assert.ok(
-      abs(derivedOldSum - newSum - flow.assets) <= bound,
-      `${day.date}: derived vault+treasury exceeds bound`,
-    );
-  }
+  const ordered = [...events].sort((a, b) =>
+    Number(integer(a.logIndex) - integer(b.logIndex)),
+  );
+  const last = ordered.at(-1);
+  const lockedDelta = last
+    ? integer(last.unstakeLockedAfter) - integer(day.vaultUnstakeLocked)
+    : 0n;
+  assert.equal(
+    wei(old.vaultUnstakeLocked) - integer(day.vaultUnstakeLocked),
+    lockedDelta,
+    `${day.date}: locked assets differ`,
+  );
+  transferExplained ||= lockedDelta !== 0n;
+  const vaultDifference = wei(old.vaultReward) - integer(day.vaultReward);
+  const balanceDelta = transferDelta(transfers, "vaultBalance");
+  transferExplained ||= balanceDelta !== 0n;
+  const accrualDelta =
+    vaultDifference - balanceDelta + flow.assets + lockedDelta;
+  const midnight = BigInt(Date.parse(`${utcDate(day.date)}T00:00:00Z`) / 1000);
+  const oldTimestamp = BigInt(Date.parse(text(old.timestamp)) / 1000);
+  assert.ok(oldTimestamp >= midnight, "Old snapshot precedes midnight");
+  const bound =
+    (vault ? integer(vault.rewardRate) : 0n) * (oldTimestamp - midnight) +
+    10n ** 12n;
+  assert.ok(
+    abs(accrualDelta) <= bound,
+    `${day.date}: vault accrual exceeds rate*time + 1e-6 PHA`,
+  );
+  // Assets+treasury is derived from old vaultReward; independent raw values
+  // are checked separately in optional archive-RPC mode.
+  const derivedOldSum =
+    integer(day.vaultBalance) +
+    balanceDelta -
+    wei(old.vaultUnstakeLocked) -
+    wei(old.vaultReward);
+  const newSum =
+    integer(day.vaultTotalAssets) + integer(day.vaultTreasuryAssets);
+  assert.ok(
+    abs(derivedOldSum - newSum - flow.assets) <= bound,
+    `${day.date}: derived vault+treasury exceeds bound`,
+  );
   let circulationDelta = transferDelta(transfers, "totalSupply");
   for (const component of [
     "reward",
     "phalaChainBridge",
     "khalaChainBridge",
     "sygmaBridge",
-    "portalBridge",
+    "sunsetReward",
   ]) {
     const delta = transferDelta(transfers, component);
     transferExplained ||= delta !== 0n;
     circulationDelta -= delta;
   }
-  if (day.chain === "ethereum")
-    circulationDelta -=
-      transferDelta(transfers, "sunsetReward") + vaultDifference;
+  circulationDelta -= vaultDifference;
   assert.equal(
-    wei(old.circulation) - integer(day.circulation),
+    wei(old.circulation) + wei(old.portalBridge) - integer(day.circulation),
     circulationDelta,
     `${day.date}: unexplained circulation difference`,
   );
-  return { transferExplained, accrualDelta, bound };
+  return {
+    transferExplained,
+    accrualDelta,
+    bound,
+    // Adding accrualDelta leaves only independently audited first-block flows.
+    circulationBound: abs(circulationDelta + accrualDelta) + bound,
+  };
+}
+
+// Archive totals used Ethereum + Base. Replace only the archived Base term
+// with Portal escrow; gate 1 independently bounds the midnight difference.
+export function compareArchive(
+  row: Row,
+  day: Row,
+  old: Row,
+  comparison: SnapshotComparison,
+): Row {
+  const date = utcDate(row.updated_time);
+  const legacy =
+    (row.phala_circulation == null ? 0 : finite(row.phala_circulation)) +
+    (row.khala_circulation == null ? 0 : finite(row.khala_circulation));
+  const oldBase = old.base == null ? 0 : finite(record(old.base).circulation);
+  const archivedBase =
+    row.base_circulation == null ? oldBase : finite(row.base_circulation);
+  close(archivedBase, oldBase, 1e-7, `${date}: archived Base differs`);
+  const archivedTotal =
+    row.total_circulation == null
+      ? finite(row.ethereum_circulation) + archivedBase + legacy
+      : finite(row.total_circulation);
+  close(
+    finite(old.totalCirculation) + legacy,
+    archivedTotal,
+    1e-7,
+    `${date}: archive differs from independent old snapshot`,
+  );
+  const portal = finite(record(old.ethereum).portalBridge);
+  const adjustedTotal = archivedTotal - archivedBase + portal;
+  const actual = pha(day.circulation) + legacy;
+  const residual = actual - adjustedTotal;
+  const bound =
+    Math.max(1, Math.abs(archivedTotal)) * 1e-7 +
+    Number(comparison.circulationBound) / 1e18;
+  assert.ok(
+    Math.abs(residual) <= bound,
+    `${date}: adjusted archive total exceeds first-block/accrual bound`,
+  );
+  return {
+    date,
+    archivedBasePha: archivedBase,
+    oldPortalPha: portal,
+    expectedOldMinusNewPha: archivedBase - portal,
+    actualOldMinusNewPha: archivedTotal - actual,
+    residualPha: residual,
+    boundPha: bound,
+  };
 }
 
 export function compareClaimers(actual: Row[], expected: Row[]): void {

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   ADDRESSES,
-  circulationTotal,
   claimerExport,
+  compareArchive,
   compareCheckpoints,
   compareClaimers,
   compareSnapshot,
@@ -10,7 +10,6 @@ import {
   compareVaultConsistency,
   deterministicSample,
   type Row,
-  selectedChains,
   snapshotDates,
   transferDelta,
   wei,
@@ -109,22 +108,38 @@ describe("exact balances and explained first-block differences", () => {
       compareSnapshot(day, impossible, [], [], { rewardRate: "2" }),
     ).toThrow("exceeds");
   });
-  test("Base circulation accounts for excluded transfers even though the old API omits their balances", () => {
-    const base = { ...day, chain: "base", circulation: "850" };
-    const expected = {
-      totalSupply: old.totalSupply,
-      circulation: "0.00000000000000086",
+  test("Portal escrow stays circulating across audited Portal transfers", () => {
+    const portalDay = { ...day, portalBridge: "70" };
+    const portalOld = {
+      ...old,
+      portalBridge: "0.00000000000000007",
+      circulation: "0.00000000000000075",
     };
     expect(() =>
+      compareSnapshot(portalDay, portalOld, [], [], undefined),
+    ).not.toThrow();
+    const moved = {
+      ...portalOld,
+      portalBridge: "0.00000000000000008",
+      circulation: "0.00000000000000074",
+    };
+    const transfers = [transfer("0x1234", ADDRESSES.portalBridge ?? "", "10")];
+    expect(
+      compareSnapshot(portalDay, moved, transfers, [], undefined)
+        .transferExplained,
+    ).toBe(true);
+    expect(() => compareSnapshot(portalDay, moved, [], [], undefined)).toThrow(
+      "portalBridge",
+    );
+    expect(() =>
       compareSnapshot(
-        base,
-        expected,
-        [transfer(ADDRESSES.reward ?? "", "0x1234", "10")],
+        { ...portalDay, circulation: "750" },
+        portalOld,
+        [],
         [],
         undefined,
       ),
-    ).not.toThrow();
-    expect(() => compareSnapshot(base, expected, [], [], undefined)).toThrow();
+    ).toThrow("circulation");
   });
 });
 test("claimer parity compares every field and the complete ID set", () => {
@@ -190,35 +205,74 @@ test("exported claims require the complete schema, unique IDs and an indexed cut
     claimerExport({ ...phala, claimeds: [exportedClaim] }, "phala"),
   ).toThrow("no longer empty");
 });
-test("partial totals use only selected new chains, old API counterparts, and zero Base before deployment", () => {
-  const days = {
-    ethereum: { circulation: "2000000000000000000" },
-    base: { circulation: "3000000000000000000" },
+test("archive totals replace Base with Portal and bound every date's residual", () => {
+  const row = {
+    updated_time: "2026-10-10",
+    ethereum_circulation: 100,
+    base_circulation: 20,
+    phala_circulation: 3,
+    khala_circulation: 4,
+    total_circulation: 127,
   };
   const snapshot = {
-    ethereum: { circulation: "20" },
-    base: { circulation: "30" },
+    totalCirculation: "120",
+    ethereum: { portalBridge: "25" },
+    base: { circulation: "20" },
   };
-  expect(circulationTotal("2026-10-10", ["ethereum"], days, snapshot)).toBe(32);
-  expect(circulationTotal("2026-10-10", ["base"], days, snapshot)).toBe(23);
-  expect(
-    circulationTotal("2026-10-10", ["ethereum", "base"], days, undefined),
-  ).toBe(5);
-  expect(
-    circulationTotal("2021-02-08", ["base"], {}, { ...snapshot, base: null }),
-  ).toBe(20);
-  expect(() => circulationTotal("2026-10-10", ["base"], {}, snapshot)).toThrow(
-    "base date missing",
-  );
+  const actual = { circulation: "125000000000000000000" };
+  const comparison = {
+    transferExplained: false,
+    accrualDelta: 0n,
+    bound: 0n,
+    circulationBound: 0n,
+  };
+  const result = compareArchive(row, actual, snapshot, comparison);
+  expect(result.expectedOldMinusNewPha).toBe(-5);
+  expect(result.residualPha).toBe(0);
+  expect(result.boundPha).toBeCloseTo(127e-7);
   expect(() =>
-    circulationTotal("2026-10-10", ["base"], days, undefined),
-  ).toThrow("hybrid total");
+    compareArchive(
+      row,
+      { circulation: "126000000000000000000" },
+      snapshot,
+      comparison,
+    ),
+  ).toThrow("bound");
+  expect(() =>
+    compareArchive(
+      row,
+      actual,
+      { ...snapshot, totalCirculation: "130" },
+      comparison,
+    ),
+  ).toThrow("independent");
+  expect(
+    compareArchive(
+      { ...row, base_circulation: undefined },
+      actual,
+      snapshot,
+      comparison,
+    ).residualPha,
+  ).toBe(0);
+  expect(
+    compareArchive(
+      { updated_time: "2021-02-08", ethereum_circulation: 100 },
+      { circulation: "100000000000000000000" },
+      { totalCirculation: "100", ethereum: { portalBridge: "0" }, base: null },
+      comparison,
+    ).residualPha,
+  ).toBe(0);
+  const audited = { ...comparison, circulationBound: 2n * 10n ** 18n };
+  expect(
+    compareArchive(
+      row,
+      { circulation: "126000000000000000000" },
+      snapshot,
+      audited,
+    ).residualPha,
+  ).toBe(1);
 });
-test("chain selection rejects ambiguous inputs and prefetch ends at UTC yesterday", () => {
-  expect(selectedChains("base")).toEqual(["base"]);
-  expect(selectedChains("base,ethereum")).toEqual(["ethereum", "base"]);
-  for (const invalid of ["", "all", "ethereum,ethereum", "ethereum,base,other"])
-    expect(() => selectedChains(invalid)).toThrow("--chains");
+test("prefetch ends at UTC yesterday", () => {
   const dates = snapshotDates(Date.parse("2026-10-27T00:01:00Z"));
   expect(dates[0]).toBe("2020-04-30");
   expect(dates.at(-1)).toBe("2026-10-26");

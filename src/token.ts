@@ -10,7 +10,7 @@ function apply(event: TokenTransfer, from: boolean): void {
   const state = chainState();
   const address = from ? event.params.from : event.params.to;
   const delta = from ? event.params.value.neg() : event.params.value;
-  const field = component(address, state.chain == "ethereum");
+  const field = component(address);
   if (field != "") {
     const balance = state.get(field);
     assert(balance != null, "Missing component");
@@ -23,7 +23,7 @@ function apply(event: TokenTransfer, from: boolean): void {
   state.save();
   // From always owns the audit row when both topics match. To owns it only
   // when From's topic does not match. Each handler changes just its own side.
-  if (from || !inS(event.params.from, state.chain == "ethereum")) {
+  if (from || !inS(event.params.from)) {
     const transfer = new Transfer(
       event.transaction.hash.concatI32(event.logIndex.toI32()),
     );

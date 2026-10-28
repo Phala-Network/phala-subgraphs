@@ -108,15 +108,15 @@ export function circulationFields(
     .minus(assets.total)
     .minus(assets.treasury)
     .minus(locked);
-  let circulation = state.totalSupply
+  // Portal escrow backs circulating PHA on Base and remains in circulation.
+  const circulation = state.totalSupply
     .minus(state.reward)
     .minus(state.sunsetReward)
     .minus(state.phalaChainBridge)
     .minus(state.khalaLegacyChainBridge)
     .minus(state.khalaChainBridge)
     .minus(state.sygmaBridge)
-    .minus(state.portalBridge);
-  if (state.chain == "ethereum") circulation = circulation.minus(reward);
+    .minus(reward);
   target.set("vaultTotalAssets", Value.fromBigInt(assets.total));
   target.set("vaultTreasuryAssets", Value.fromBigInt(assets.treasury));
   target.set("vaultUnstakeLocked", Value.fromBigInt(locked));

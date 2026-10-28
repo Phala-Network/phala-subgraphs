@@ -5,12 +5,10 @@ import { createPublicClient, http, parseAbi } from "viem";
 import {
   ADDRESSES,
   abs,
-  CHAINS,
-  type Chain,
   CLAIM_FIELDS,
-  circulationTotal,
   claimerExport,
   close,
+  compareArchive,
   compareCheckpoints,
   compareClaimers,
   compareSnapshot,
@@ -25,8 +23,8 @@ import {
   type Row,
   record,
   rows,
-  START_DATES,
-  selectedChains,
+  type SnapshotComparison,
+  START_DATE,
   shape,
   snapshotDates,
   text,
@@ -128,10 +126,8 @@ export function args(argv = process.argv.slice(2)) {
     args: argv,
     options: {
       stage: { type: "string", default: "subgraphs" },
-      chains: { type: "string", default: "ethereum,base" },
       "prefetch-snapshots": { type: "boolean", default: false },
       ethereum: { type: "string" },
-      base: { type: "string" },
       "old-api": { type: "string", default: OLD_API },
       "old-vault": {
         type: "string",
@@ -154,58 +150,44 @@ export function args(argv = process.argv.slice(2)) {
       output: { type: "string", default: "verification-results.json" },
       "snapshot-cache": { type: "string" },
       "archive-rpc": { type: "string" },
-      "base-archive-rpc": { type: "string" },
       samples: { type: "string", default: "30" },
     },
   });
   assert.ok(["subgraphs", "server", "cache", "all"].includes(values.stage));
   const options = {
     ...values,
-    chains: selectedChains(values.chains),
     ethereum: values.ethereum ?? process.env.GOLDSKY_ETHEREUM_URL,
-    base: values.base ?? process.env.GOLDSKY_BASE_URL,
     ndjson: values.ndjson ?? process.env.SNAPSHOTS_NDJSON,
     results: values.results ?? process.env.DUNE_RESULTS_JSON,
     preview: values.preview ?? process.env.SERVER_PREVIEW_URL,
     "d1-json": values["d1-json"] ?? process.env.D1_EXPORT_JSON,
     "archive-rpc": values["archive-rpc"] ?? process.env.ARCHIVE_RPC_URL,
-    "base-archive-rpc":
-      values["base-archive-rpc"] ?? process.env.BASE_ARCHIVE_RPC_URL,
   };
   if (options["prefetch-snapshots"])
     required(options["snapshot-cache"], "--snapshot-cache for prefetching");
-  else {
-    assert.ok(
-      options.stage === "subgraphs" || options.chains.length === CHAINS.length,
-      "Server, cache and all stages require both chains",
-    );
-    for (const chain of options.chains) endpoint(options, chain);
-  }
+  else endpoint(options);
   return options;
 }
 type Options = ReturnType<typeof args>;
-function endpoint(options: Options, chain: Chain): string {
-  return required(
-    options[chain],
-    `--${chain} / GOLDSKY_${chain.toUpperCase()}_URL`,
-  );
+function endpoint(options: Options): string {
+  return required(options.ethereum, "--ethereum / GOLDSKY_ETHEREUM_URL");
 }
 interface Evidence {
   ethereum: Row[];
-  base: Row[];
   vault: Row[];
   events: Row[];
-  meta: Partial<Record<Chain, Row>>;
+  meta: { ethereum?: Row };
+  comparisons: Map<string, SnapshotComparison>;
   oldSnapshots: Map<string, Row>;
   transferDates: Set<string>;
 }
 export async function load(options: Options): Promise<Evidence> {
   const evidence: Evidence = {
     ethereum: [],
-    base: [],
     vault: [],
     events: [],
     meta: {},
+    comparisons: new Map(),
     oldSnapshots: new Map(),
     transferDates: new Set(),
   };
@@ -214,53 +196,48 @@ export async function load(options: Options): Promise<Evidence> {
     declarations: ",$cutoff:BigInt!",
     variables: { cutoff: String(record(metaValue.block).timestamp) },
   });
-  for (const chain of options.chains) {
-    const url = endpoint(options, chain);
-    const indexed = await meta(url);
-    evidence.meta[chain] = indexed;
-    const latest = record(
-      (
-        await gql(
-          url,
-          '{latest(id:"current"){timestamp vaultImplementationReviewed accrualMode}}',
-        )
-      ).latest,
-    );
-    assert.ok(
-      Math.abs(Date.now() / 1000 - Number(integer(latest.timestamp))) <= 900,
-      "Latest is more than 15 minutes old; wait for full sync and Clock polling",
-    );
-    if (chain === "ethereum")
-      assert.equal(
-        latest.vaultImplementationReviewed,
-        true,
-        "Unreviewed Vault implementation; review before promotion",
-      );
-    evidence[chain] = await page(
-      url,
-      "chainDays",
-      DAY_FIELDS,
-      cutoffOptions(indexed),
-    );
-    assert.ok(
-      evidence[chain].length > 0,
-      `New ${chain} subgraph has no daily entities`,
-    );
-    if (chain === "ethereum") {
-      evidence.vault = await page(
+  const url = endpoint(options);
+  const indexed = await meta(url);
+  evidence.meta.ethereum = indexed;
+  const latest = record(
+    (
+      await gql(
         url,
-        "vaultDays",
-        VAULT_FIELDS,
-        cutoffOptions(indexed),
-      );
-      evidence.events = await page(url, "vaultEvents", EVENT_FIELDS, {
-        bytes: true,
-        filter: "blockNumber_lte:$cutoff",
-        declarations: ",$cutoff:BigInt!",
-        variables: { cutoff: String(record(indexed.block).number) },
-      });
-    }
-  }
+        '{latest(id:"current"){timestamp vaultImplementationReviewed accrualMode}}',
+      )
+    ).latest,
+  );
+  assert.ok(
+    Math.abs(Date.now() / 1000 - Number(integer(latest.timestamp))) <= 900,
+    "Latest is more than 15 minutes old; wait for full sync and Clock polling",
+  );
+  assert.equal(
+    latest.vaultImplementationReviewed,
+    true,
+    "Unreviewed Vault implementation; review before promotion",
+  );
+  evidence.ethereum = await page(
+    url,
+    "chainDays",
+    DAY_FIELDS,
+    cutoffOptions(indexed),
+  );
+  assert.ok(
+    evidence.ethereum.length > 0,
+    "New Ethereum subgraph has no daily entities",
+  );
+  evidence.vault = await page(
+    url,
+    "vaultDays",
+    VAULT_FIELDS,
+    cutoffOptions(indexed),
+  );
+  evidence.events = await page(url, "vaultEvents", EVENT_FIELDS, {
+    bytes: true,
+    filter: "blockNumber_lte:$cutoff",
+    declarations: ",$cutoff:BigInt!",
+    variables: { cutoff: String(record(indexed.block).number) },
+  });
   assert.ok(
     evidence.ethereum.every((day) => day.vaultImplementationReviewed === true),
     "Unreviewed historical Vault day; reindex after implementation review",
@@ -344,66 +321,46 @@ async function atBlock(
 }
 async function balances(options: Options, evidence: Evidence): Promise<Row> {
   evidence.oldSnapshots = await cachedSnapshots(options["snapshot-cache"]);
-  const days = {
-    ethereum: dated(evidence.ethereum),
-    base: dated(evidence.base),
-  };
+  const days = dated(evidence.ethereum);
   const vault = dated(evidence.vault);
-  const dates = [
-    ...new Set(options.chains.flatMap((chain) => [...days[chain].keys()])),
-  ].sort();
-  for (const chain of options.chains) {
-    const map = days[chain];
-    const sorted = [...map.keys()].sort();
-    const first = sorted[0];
-    const last = sorted.at(-1);
-    assert.ok(first && last);
-    assert.equal(
-      sorted.length,
-      (Date.parse(last) - Date.parse(first)) / 86400000 + 1,
-      "Missing daily snapshots within deployment range",
-    );
-    assert.equal(
-      first,
-      START_DATES[chain],
-      `${chain} must start on deployment date`,
-    );
-  }
+  const dates = [...days.keys()].sort();
+  const first = dates[0];
+  const last = dates.at(-1);
+  assert.ok(first && last);
+  assert.equal(
+    dates.length,
+    (Date.parse(last) - Date.parse(first)) / 86400000 + 1,
+    "Missing daily snapshots within deployment range",
+  );
+  assert.equal(first, START_DATE, "Ethereum must start on deployment date");
   let explainedDates = 0;
   let maxAccrualDelta = 0n;
   let checked = 0;
   for (const date of dates) {
     const oldSnapshot = await snapshot(options, evidence.oldSnapshots, date);
-    let explained = false;
-    for (const chain of options.chains) {
-      if (date < START_DATES[chain]) {
-        assert.equal(oldSnapshot[chain], null);
-        continue;
-      }
-      const day = days[chain].get(date);
-      assert.ok(day, `Missing ${chain} day ${date}`);
-      const old = record(oldSnapshot[chain]);
-      const url = endpoint(options, chain);
-      const transfers = await atBlock(url, "transfers", text(old.blockNumber));
-      const events =
-        chain === "ethereum"
-          ? evidence.events.filter(
-              (event) => event.blockNumber === old.blockNumber,
-            )
-          : [];
-      const result = compareSnapshot(
-        day,
-        old,
-        transfers,
-        events,
-        vault.get(date),
-      );
-      explained ||= result.transferExplained;
-      if (abs(result.accrualDelta) > maxAccrualDelta)
-        maxAccrualDelta = abs(result.accrualDelta);
-      if (transfers.length) evidence.transferDates.add(date);
-    }
-    if (explained) explainedDates++;
+    const day = days.get(date);
+    assert.ok(day, `Missing Ethereum day ${date}`);
+    const old = record(oldSnapshot.ethereum);
+    const transfers = await atBlock(
+      endpoint(options),
+      "transfers",
+      text(old.blockNumber),
+    );
+    const events = evidence.events.filter(
+      (event) => event.blockNumber === old.blockNumber,
+    );
+    const result = compareSnapshot(
+      day,
+      old,
+      transfers,
+      events,
+      vault.get(date),
+    );
+    evidence.comparisons.set(date, result);
+    if (result.transferExplained) explainedDates++;
+    if (abs(result.accrualDelta) > maxAccrualDelta)
+      maxAccrualDelta = abs(result.accrualDelta);
+    if (transfers.length) evidence.transferDates.add(date);
     checked++;
     if (checked % 100 === 0)
       console.log(`Snapshot comparisons: ${checked}/${dates.length}`);
@@ -413,18 +370,12 @@ async function balances(options: Options, evidence: Evidence): Promise<Row> {
     "More than 1% of dates need first-block flow explanations",
   );
   return {
-    chains: options.chains,
-    pendingChains: CHAINS.filter((chain) => !options.chains.includes(chain)),
     dates: dates.length,
     explainedDates,
     maxAccrualDeltaWei: maxAccrualDelta.toString(),
     coverage: {
-      ethereum: options.chains.includes("ethereum")
-        ? "Every exposed old Ethereum component; Khala bridges compared as their merged sum. vaultBalance and raw vault+treasury require optional archive-RPC samples. Gate 2 derives vault+treasury from vaultReward and audited PHA/locked-asset flows."
-        : "pending",
-      base: options.chains.includes("base")
-        ? "Old Base totalSupply and circulation; separate excluded balances require optional archive-RPC samples."
-        : "pending",
+      ethereum:
+        "Every exposed old Ethereum component; circulation equals old circulation + old portalBridge, with audited first-block flows and bounded accrual. Khala bridges compared as their merged sum. vaultBalance and raw vault+treasury require optional archive-RPC samples. Gate 2 derives vault+treasury from vaultReward and audited PHA/locked-asset flows.",
     },
   };
 }
@@ -442,61 +393,26 @@ async function archives(
   const history = exportRows(exported, "3572546", "updated_time");
   assert.equal(history.length, 365, "Expected 365 History rows");
   const ethereum = dated(evidence.ethereum);
-  const base = dated(evidence.base);
-  let explained = 0;
+  const differences: Row[] = [];
   for (const row of [...snapshots, ...history]) {
     const date = utcDate(row.updated_time);
-    const legacy =
-      (row.phala_circulation == null ? 0 : finite(row.phala_circulation)) +
-      (row.khala_circulation == null ? 0 : finite(row.khala_circulation));
-    const old =
-      options.chains.length < CHAINS.length
-        ? await snapshot(options, evidence.oldSnapshots, date)
-        : evidence.oldSnapshots.get(date);
-    const actual =
-      circulationTotal(
-        date,
-        options.chains,
-        {
-          ethereum: ethereum.get(date),
-          base: base.get(date),
-        },
-        old,
-      ) + legacy;
-    const expected =
-      row.total_circulation == null
-        ? finite(row.ethereum_circulation) +
-          (row.base_circulation == null ? 0 : finite(row.base_circulation)) +
-          legacy
-        : finite(row.total_circulation);
-    if (Math.abs(actual - expected) > Math.max(1, Math.abs(expected)) * 1e-7) {
-      assert.ok(old, `No gate 1/2 evidence for archive mismatch ${date}`);
-      close(
-        finite(old.totalCirculation) + legacy,
-        expected,
-        1e-7,
-        `Archive differs from independent old snapshot ${date}`,
-      );
-      // balances() already proved each difference from this old snapshot is
-      // exactly an audited first-block flow or within the accrued reward bound.
-      explained++;
-    }
+    const day = ethereum.get(date);
+    assert.ok(day, `Archive Ethereum date missing ${date}`);
+    const old = await snapshot(options, evidence.oldSnapshots, date);
+    const comparison = evidence.comparisons.get(date);
+    assert.ok(comparison, `No gate 1/2 evidence for archive ${date}`);
+    differences.push(compareArchive(row, day, old, comparison));
   }
   return {
     ndjson: snapshots.length,
     history: history.length,
-    beyondToleranceExplained: explained,
-    totalSources: Object.fromEntries(
-      CHAINS.map((chain) => [
-        chain,
-        options.chains.includes(chain)
-          ? "new ChainDay (zero before deployment)"
-          : "old /api/snapshot (new chain pending)",
-      ]),
-    ),
+    totalSource:
+      "New Ethereum ChainDay; archived Base replaced by old Ethereum Portal escrow",
     substrateSource: "Frozen Phala/Khala archive",
+    differences,
   };
 }
+
 export async function claimers(
   options: Options,
   evidence: Evidence,
@@ -522,12 +438,7 @@ export async function claimers(
       declarations: ",$cutoff:BigInt!",
       variables: { cutoff: String(block) },
     };
-    const actual = await page(
-      endpoint(options, "ethereum"),
-      entity,
-      fields,
-      filter,
-    );
+    const actual = await page(endpoint(options), entity, fields, filter);
     const expected =
       exported?.claims ?? (await page(oldUrl, entity, fields, filter));
     compareClaimers(actual, expected);
@@ -586,201 +497,189 @@ async function archiveRpc(
   options: Options,
   evidence: Evidence,
 ): Promise<Row[]> {
-  const result: Row[] = [];
-  for (const chain of CHAINS) {
-    if (!options.chains.includes(chain)) {
-      result.push({ chain, status: "pending", reason: "Chain not selected" });
+  const rpc = options["archive-rpc"];
+  if (!rpc)
+    return [
+      { chain: "ethereum", status: "skipped", reason: "No ARCHIVE_RPC_URL" },
+    ];
+  const client = createPublicClient({
+    transport: http(rpc, { timeout: 90_000, retryCount: 0 }),
+  });
+  const days = evidence.ethereum;
+  const byDate = dated(days);
+  const dates = deterministicSample(
+    [...byDate.keys()].sort(),
+    Number(options.samples),
+    evidence.transferDates,
+  );
+  for (const date of dates) {
+    const day = byDate.get(date);
+    assert.ok(day);
+    const blockNumber = integer(day.observedBlockNumber);
+    if (blockNumber === 0n) {
+      // No contract existed at the initial midnight; total supply is zero.
+      assert.equal(integer(day.totalSupply), 0n);
       continue;
     }
-    const rpc =
-      chain === "ethereum"
-        ? options["archive-rpc"]
-        : options["base-archive-rpc"];
-    if (!rpc) {
-      result.push({
-        chain,
-        status: "skipped",
-        reason: `No ${chain === "ethereum" ? "ARCHIVE_RPC_URL" : "BASE_ARCHIVE_RPC_URL"}`,
-      });
-      continue;
-    }
-    const client = createPublicClient({
-      transport: http(rpc, { timeout: 90_000, retryCount: 0 }),
+    const token = address("0x6c5ba91642f10282b576d91922ae6448c9d52f4e");
+    const supply = await client.readContract({
+      address: token,
+      abi: rpcAbi,
+      functionName: "totalSupply",
+      blockNumber,
     });
-    const days = chain === "ethereum" ? evidence.ethereum : evidence.base;
-    const byDate = dated(days);
-    const dates = deterministicSample(
-      [...byDate.keys()].sort(),
-      Number(options.samples),
-      evidence.transferDates,
+    assert.equal(
+      supply,
+      integer(day.totalSupply),
+      `Ethereum ${date}: raw total supply differs`,
     );
-    for (const date of dates) {
-      const day = byDate.get(date);
-      assert.ok(day);
-      const blockNumber = integer(day.observedBlockNumber);
-      if (blockNumber === 0n) {
-        // No contract existed at the initial midnight; total supply is zero.
-        assert.equal(integer(day.totalSupply), 0n);
-        continue;
-      }
-      const token = address(
-        chain === "ethereum"
-          ? "0x6c5ba91642f10282b576d91922ae6448c9d52f4e"
-          : "0x336c9297afb7798c292e9f80d8e566b947f291f0",
-      );
-      const supply = await client.readContract({
+    for (const [component, holder] of Object.entries(ADDRESSES)) {
+      const amount = await client.readContract({
         address: token,
         abi: rpcAbi,
-        functionName: "totalSupply",
+        functionName: "balanceOf",
+        args: [address(holder)],
         blockNumber,
       });
       assert.equal(
-        supply,
-        integer(day.totalSupply),
-        `${chain} ${date}: raw total supply differs`,
+        amount,
+        integer(day[component]),
+        `Ethereum ${date}: raw ${component} differs`,
       );
-      for (const [component, holder] of Object.entries(ADDRESSES)) {
-        if (
-          chain === "base" &&
-          ["sunsetReward", "vaultBalance"].includes(component)
-        )
-          continue;
-        const amount = await client.readContract({
-          address: token,
-          abi: rpcAbi,
-          functionName: "balanceOf",
-          args: [address(holder)],
-          blockNumber,
-        });
-        assert.equal(
-          amount,
-          integer(day[component]),
-          `${chain} ${date}: raw ${component} differs`,
-        );
-      }
-      if (chain === "ethereum" && blockNumber >= 21596326n) {
-        const event = evidence.events
-          .filter((item) => integer(item.blockNumber) <= blockNumber)
-          .sort(
-            (a, b) =>
-              Number(integer(a.blockNumber) - integer(b.blockNumber)) ||
-              Number(integer(a.logIndex) - integer(b.logIndex)),
-          )
-          .at(-1);
-        assert.ok(event, "Missing vault checkpoint for raw RPC comparison");
-        const expected = accrued(event, integer(day.observedBlockTimestamp));
-        assert.equal(
-          await client.readContract({
-            address: address(ADDRESSES.vaultBalance),
-            abi: rpcAbi,
-            functionName: "totalAssets",
-            blockNumber,
-          }),
-          expected.total,
-          `${date}: raw totalAssets differs`,
-        );
-        assert.equal(
-          await client.readContract({
-            address: address(ADDRESSES.vaultBalance),
-            abi: rpcAbi,
-            functionName: "treasuryAssets",
-            blockNumber,
-          }),
-          expected.treasury,
-          `${date}: raw treasuryAssets differs`,
-        );
-      }
     }
-    result.push({ chain, status: "pass", samples: dates.length });
+    if (blockNumber >= 21596326n) {
+      const event = evidence.events
+        .filter((item) => integer(item.blockNumber) <= blockNumber)
+        .sort(
+          (a, b) =>
+            Number(integer(a.blockNumber) - integer(b.blockNumber)) ||
+            Number(integer(a.logIndex) - integer(b.logIndex)),
+        )
+        .at(-1);
+      assert.ok(event, "Missing vault checkpoint for raw RPC comparison");
+      const expected = accrued(event, integer(day.observedBlockTimestamp));
+      assert.equal(
+        await client.readContract({
+          address: address(ADDRESSES.vaultBalance),
+          abi: rpcAbi,
+          functionName: "totalAssets",
+          blockNumber,
+        }),
+        expected.total,
+        `${date}: raw totalAssets differs`,
+      );
+      assert.equal(
+        await client.readContract({
+          address: address(ADDRESSES.vaultBalance),
+          abi: rpcAbi,
+          functionName: "treasuryAssets",
+          blockNumber,
+        }),
+        expected.treasury,
+        `${date}: raw treasuryAssets differs`,
+      );
+    }
   }
-  return result;
+  return [{ chain: "ethereum", status: "pass", samples: dates.length }];
 }
 async function server(options: Options, evidence: Evidence): Promise<Row> {
   const preview = required(options.preview, "--preview / SERVER_PREVIEW_URL");
-  for (const endpoint of ["circulation", "all"]) {
-    const expected = await json(`${options["old-api"]}/api/${endpoint}`);
-    const actual = await json(`${preview}/api/${endpoint}`);
-    if (endpoint === "all") {
-      // The plan explicitly replaces these source metadata fields in PR2.
-      const oldSource = record(record(record(expected).sources).ethereum);
-      const newSource = record(record(record(actual).sources).ethereum);
-      delete oldSource.headBlockNumber;
-      delete oldSource.lagBlocks;
-      assert.equal(typeof newSource.indexedAt, "string");
-      assert.equal(typeof newSource.lagSeconds, "string");
-      delete newSource.indexedAt;
-      delete newSource.lagSeconds;
-      close(
-        finite(record(actual).totalCirculation),
-        finite(record(expected).totalCirculation),
-        1e-6,
-        "/all circulation differs",
-      );
-    }
-    assert.deepEqual(
-      shape(actual),
-      shape(expected),
-      `${endpoint}: key sets or types differ`,
-    );
-  }
+  const expectedAll = record(await json(`${options["old-api"]}/api/all`));
+  const actualAll = record(await json(`${preview}/api/all`));
+  const oldEthereum = record(expectedAll.ethereum);
+  close(
+    finite(actualAll.totalCirculation),
+    finite(oldEthereum.circulation) + finite(oldEthereum.portalBridge),
+    1e-6,
+    "/all circulation differs from old Ethereum + Portal",
+  );
+  close(
+    finite(actualAll.totalCirculation),
+    finite(record(actualAll.ethereum).circulation),
+    1e-12,
+    "/all total must equal Ethereum circulation",
+  );
+  assert.equal(actualAll.base, null, "Base compatibility field must be null");
+  expectedAll.base = null;
+  const oldSources = record(expectedAll.sources);
+  const newSources = record(actualAll.sources);
+  assert.ok(newSources.base == null, "Base source must be absent or null");
+  delete oldSources.base;
+  delete newSources.base;
+  const oldSource = record(oldSources.ethereum);
+  const newSource = record(newSources.ethereum);
+  delete oldSource.headBlockNumber;
+  delete oldSource.lagBlocks;
+  assert.equal(typeof newSource.indexedAt, "string");
+  assert.equal(typeof newSource.lagSeconds, "string");
+  delete newSource.indexedAt;
+  delete newSource.lagSeconds;
+  assert.deepEqual(
+    shape(actualAll),
+    shape(expectedAll),
+    "/all key sets or types differ",
+  );
+  const actualCirculation = await json(`${preview}/api/circulation`);
+  close(
+    finite(actualCirculation),
+    finite(actualAll.totalCirculation),
+    1e-6,
+    "/circulation differs from /all",
+  );
+
   const ethereum = dated(evidence.ethereum);
-  const base = dated(evidence.base);
   const dates = deterministicSample([...ethereum.keys()].sort(), 30);
+  evidence.oldSnapshots = await cachedSnapshots(options["snapshot-cache"]);
   for (const date of dates) {
     const actual = record(await json(`${preview}/api/snapshot?date=${date}`));
-    const expected = await json(
-      `${options["old-api"]}/api/snapshot?date=${date}`,
-    );
+    const expected = {
+      ...(await snapshot(options, evidence.oldSnapshots, date)),
+      base: null,
+    };
+    assert.equal(actual.base, null, "Base compatibility field must be null");
     assert.deepEqual(
       shape(actual),
       shape(expected),
       `${date}: snapshot key sets or types differ`,
     );
-    for (const [chain, day] of [
-      ["ethereum", ethereum.get(date)],
-      ["base", base.get(date)],
-    ] as const) {
-      if (!day) {
-        assert.equal(actual[chain], null);
-        continue;
-      }
-      const snapshot = record(actual[chain]);
-      for (const field of ["circulation", "totalSupply"])
-        assert.equal(
-          weiAmount(snapshot[field]),
-          integer(day[field]),
-          `${chain} ${date}: snapshot ${field} differs`,
-        );
-      if (chain === "ethereum") {
-        for (const field of [
-          "reward",
-          "sunsetReward",
-          "phalaChainBridge",
-          "sygmaBridge",
-          "portalBridge",
-          "vaultReward",
-          "vaultUnstakeLocked",
-        ])
-          assert.equal(
-            weiAmount(snapshot[field]),
-            integer(day[field]),
-            `${date}: snapshot ${field} differs`,
-          );
-        assert.equal(
-          weiAmount(snapshot.khalaChainBridge),
-          integer(day.khalaChainBridge) + integer(day.khalaLegacyChainBridge),
-        );
-      }
-    }
+    const day = ethereum.get(date);
+    assert.ok(day);
+    const snapshotValue = record(actual.ethereum);
+    for (const field of [
+      "circulation",
+      "totalSupply",
+      "reward",
+      "sunsetReward",
+      "phalaChainBridge",
+      "sygmaBridge",
+      "portalBridge",
+      "vaultReward",
+      "vaultUnstakeLocked",
+    ])
+      assert.equal(
+        weiAmount(snapshotValue[field]),
+        integer(day[field]),
+        `${date}: snapshot ${field} differs`,
+      );
+    assert.equal(
+      weiAmount(snapshotValue.khalaChainBridge),
+      integer(day.khalaChainBridge) + integer(day.khalaLegacyChainBridge),
+    );
+    close(
+      finite(actual.totalCirculation),
+      pha(day.circulation),
+      1e-12,
+      `${date}: snapshot total differs`,
+    );
   }
   return {
     snapshots: dates.length,
     sourceMetadataChange:
-      "headBlockNumber/lagBlocks replaced by indexedAt/lagSeconds as approved",
+      "headBlockNumber/lagBlocks replaced by indexedAt/lagSeconds; Base source removed",
+    circulationDefinition:
+      "Ethereum circulation includes Portal escrow; base compatibility field is null",
   };
 }
-
-// Kept local to make the API's PHA-string to integer-wei conversion explicit.
 
 function cacheCheck(
   value: unknown,
@@ -791,7 +690,7 @@ function cacheCheck(
   const circulation = rows(data.circulation_day);
   assert.equal(
     circulation.length,
-    evidence.ethereum.length + evidence.base.length,
+    evidence.ethereum.length,
     "D1 circulation row count differs",
   );
   const vault = rows(data.vault_day);
@@ -802,24 +701,25 @@ function cacheCheck(
     "D1 vault row count differs",
   );
   // Raw SQL export values are PHA decimals; IDs/date/chain remain strings.
-  for (const chain of ["ethereum", "base"] as const) {
-    const expected = chain === "ethereum" ? evidence.ethereum : evidence.base;
-    const actual = dated(circulation.filter((row) => row.chain === chain));
-    assert.equal(actual.size, expected.length);
-    const last = [...expected]
-      .sort((a, b) => text(a.date).localeCompare(text(b.date)))
-      .at(-1);
-    assert.ok(last);
-    const row = actual.get(utcDate(last.date));
-    assert.ok(row);
-    for (const field of COMPONENTS.split(" "))
-      close(
-        finite(row[field]),
-        pha(last[field]),
-        1e-9,
-        `D1 latest ${chain}.${field} differs`,
-      );
-  }
+  assert.ok(
+    circulation.every((row) => row.chain === "ethereum"),
+    "D1 contains a non-Ethereum chain",
+  );
+  const actual = dated(circulation);
+  assert.equal(actual.size, evidence.ethereum.length);
+  const last = [...evidence.ethereum]
+    .sort((a, b) => text(a.date).localeCompare(text(b.date)))
+    .at(-1);
+  assert.ok(last);
+  const row = actual.get(utcDate(last.date));
+  assert.ok(row);
+  for (const field of COMPONENTS.split(" "))
+    close(
+      finite(row[field]),
+      pha(last[field]),
+      1e-9,
+      `D1 latest Ethereum.${field} differs`,
+    );
   const latestVault = [...evidence.vault]
     .sort((a, b) => text(a.date).localeCompare(text(b.date)))
     .at(-1);
@@ -882,8 +782,6 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const report: Row = {
     startedAt: new Date().toISOString(),
     stage: options["prefetch-snapshots"] ? "prefetch-snapshots" : options.stage,
-    chains: options.chains,
-    pendingChains: CHAINS.filter((chain) => !options.chains.includes(chain)),
     gates: {},
   };
   const gates = record(report.gates);
@@ -895,12 +793,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       return;
     }
     const evidence = await load(options);
-    report.deployments = Object.fromEntries(
-      options.chains.map((chain) => [
-        chain,
-        record(evidence.meta[chain]).deployment,
-      ]),
-    );
+    report.deployments = {
+      ethereum: record(evidence.meta.ethereum).deployment,
+    };
     if (["subgraphs", "all"].includes(options.stage)) {
       gates["1-2"] = await balances(options, evidence);
       const exported: unknown = JSON.parse(
@@ -918,37 +813,29 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         ),
         exported,
       );
-      if (options.chains.includes("ethereum")) {
-        gates["4"] = {
-          ...compareVault(
-            evidence.vault,
-            exportRows(exported, "5154700", "day"),
-          ),
-          consistency: compareVaultConsistency(evidence.vault, evidence.events),
-        };
-        const oldMeta = await meta(options["old-vault"]);
-        const cutoff = Math.min(
-          Number(record(oldMeta.block).number),
-          Number(record(record(evidence.meta.ethereum).block).number),
-        );
-        const checkpoints = await page(
-          options["old-vault"],
-          "vaultStateCheckpoints",
-          "id blockNumber vaultUnstakeLocked",
-          {
-            bytes: true,
-            filter: "blockNumber_lte:$cutoff",
-            declarations: ",$cutoff:BigInt!",
-            variables: { cutoff: String(cutoff) },
-          },
-        );
-        compareCheckpoints(evidence.events, checkpoints);
-        gates["5"] = { checkpoints: checkpoints.length, cutoff };
-        gates["6"] = await claimers(options, evidence);
-      } else {
-        for (const gate of ["4", "5", "6"])
-          gates[gate] = { status: "pending", reason: "Ethereum not selected" };
-      }
+      gates["4"] = {
+        ...compareVault(evidence.vault, exportRows(exported, "5154700", "day")),
+        consistency: compareVaultConsistency(evidence.vault, evidence.events),
+      };
+      const oldMeta = await meta(options["old-vault"]);
+      const cutoff = Math.min(
+        Number(record(oldMeta.block).number),
+        Number(record(record(evidence.meta.ethereum).block).number),
+      );
+      const checkpoints = await page(
+        options["old-vault"],
+        "vaultStateCheckpoints",
+        "id blockNumber vaultUnstakeLocked",
+        {
+          bytes: true,
+          filter: "blockNumber_lte:$cutoff",
+          declarations: ",$cutoff:BigInt!",
+          variables: { cutoff: String(cutoff) },
+        },
+      );
+      compareCheckpoints(evidence.events, checkpoints);
+      gates["5"] = { checkpoints: checkpoints.length, cutoff };
+      gates["6"] = await claimers(options, evidence);
       report.archiveRpc = await archiveRpc(options, evidence);
     }
     if (["server", "all"].includes(options.stage))
@@ -968,7 +855,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       );
       const cache = cacheCheck(data, exported, evidence);
       const expectedClaims = await page(
-        endpoint(options, "ethereum"),
+        endpoint(options),
         "claimDays",
         "id date khalaClaimCount khalaFree khalaStaked phalaClaimCount phalaFree phalaStaked",
       );
@@ -1001,11 +888,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }
       gates["8"] = cache;
     }
-    report.status =
-      options.chains.length === CHAINS.length ? "pass" : "partial-pass";
-    console.log(
-      `Parity gates passed for stage ${options.stage}, chains ${options.chains.join(",")}${options.chains.length < CHAINS.length ? "; other chain pending" : ""}`,
-    );
+    report.status = "pass";
+    console.log(`Parity gates passed for stage ${options.stage}, Ethereum`);
   } catch (error) {
     report.status = "fail";
     report.error =

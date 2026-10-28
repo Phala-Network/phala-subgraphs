@@ -3,7 +3,6 @@ import {
   afterEach,
   assert,
   clearStore,
-  dataSourceMock,
   newMockEvent,
   test,
 } from "matchstick-as";
@@ -13,7 +12,6 @@ import { ZERO } from "../src/constants";
 
 afterEach(() => {
   clearStore();
-  dataSourceMock.resetValues();
 });
 function transfer(
   from: string,
@@ -70,16 +68,4 @@ test("a midnight transfer is excluded from that midnight's snapshot", () => {
   handleTo(moved);
   assert.fieldEquals("ChainDay", "2020-05-01", "reward", "100");
   assert.fieldEquals("Latest", "current", "reward", "70");
-});
-
-test("Base gap fills from deployment midnight even before its first transfer", () => {
-  dataSourceMock.setNetwork("base");
-  const mint = transfer(ZERO, REWARD, 100, 1, 1712448001);
-  handleFrom(mint);
-  handleTo(mint);
-  assert.fieldEquals("ChainDay", "2024-04-05", "totalSupply", "0");
-  assert.fieldEquals("ChainDay", "2024-04-06", "totalSupply", "0");
-  assert.fieldEquals("ChainDay", "2024-04-07", "totalSupply", "0");
-  assert.fieldEquals("Latest", "current", "chain", "base");
-  assert.fieldEquals("Latest", "current", "circulation", "0");
 });
